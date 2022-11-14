@@ -394,7 +394,6 @@ class TBDisplayedFields(DisplayedFields):  # {{{
         if self.changed:
             self.db.prefs.set('tag_browser_hidden_categories', [k for k,v in self.fields if not v])
             self.db.prefs.set('tag_browser_category_order', [k for k,v in self.fields])
-            self.gui.tags_view.model().reset_tag_browser_categories()
 # }}}
 
 
@@ -431,7 +430,6 @@ class TBPartitionedFields(DisplayedFields):  # {{{
         if self.changed:
             # Migrate to a per-library setting
             self.db.prefs.set('tag_browser_dont_collapse', [k for k,v in self.fields if not v])
-            self.gui.tags_view.model().reset_tag_browser_categories()
 # }}}
 
 
@@ -469,7 +467,38 @@ class TBHierarchicalFields(DisplayedFields):  # {{{
     def commit(self):
         if self.changed:
             self.db.prefs.set('categories_using_hierarchy', [k for k,v in self.fields if v])
-            self.gui.tags_view.model().reset_tag_browser_categories()
+# }}}
+
+
+class BDVerticalCats(DisplayedFields):  # {{{
+
+    def __init__(self, db, parent=None, category_icons=None):
+        DisplayedFields.__init__(self, db, parent, category_icons=category_icons)
+        from calibre.gui2.ui import get_gui
+        self.gui = get_gui()
+
+    def initialize(self, use_defaults=False, pref_data_override=None):
+        fm = self.db.field_metadata
+        cats = [k for k in fm if fm[k]['name'] and fm[k]['is_multiple']]
+        ans = []
+        if use_defaults:
+            ans = [[k, False] for k in cats]
+            self.changed = True
+        elif pref_data_override:
+            ph = {k:v for k,v in pref_data_override}
+            ans = [[k, ph.get(k, False)] for k in cats]
+            self.changed = True
+        else:
+            vertical_cats =  self.db.prefs.get('book_details_vertical_categories') or ()
+            for key in cats:
+                ans.append([key, key in vertical_cats])
+        self.beginResetModel()
+        self.fields = ans
+        self.endResetModel()
+
+    def commit(self):
+        if self.changed:
+            self.db.prefs.set('book_details_vertical_categories', [k for k,v in self.fields if v])
 # }}}
 
 
@@ -645,56 +674,50 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.current_font = self.initial_font = None
         self.change_font_button.clicked.connect(self.change_font)
 
-        self.display_model = DisplayedFields(self.gui.current_db,
-                self.field_display_order)
+        self.display_model = DisplayedFields(self.gui.current_db, self.field_display_order)
         self.display_model.dataChanged.connect(self.changed_signal)
         self.field_display_order.setModel(self.display_model)
-        connect_lambda(self.df_up_button.clicked, self,
-                lambda self: move_field_up(self.field_display_order, self.display_model))
-        connect_lambda(self.df_down_button.clicked, self,
-                lambda self: move_field_down(self.field_display_order, self.display_model))
+        mu = partial(move_field_up, self.field_display_order, self.display_model)
+        md = partial(move_field_down, self.field_display_order, self.display_model)
+        self.df_up_button.clicked.connect(mu)
+        self.df_down_button.clicked.connect(md)
+        self.field_display_order.set_movement_functions(mu, md)
 
-        self.em_display_model = EMDisplayedFields(self.gui.current_db,
-                self.em_display_order)
+        self.em_display_model = EMDisplayedFields(self.gui.current_db, self.em_display_order)
         self.em_display_model.dataChanged.connect(self.changed_signal)
         self.em_display_order.setModel(self.em_display_model)
-        connect_lambda(self.em_up_button.clicked, self,
-                lambda self: move_field_up(self.em_display_order, self.em_display_model))
-        connect_lambda(self.em_down_button.clicked, self,
-                lambda self: move_field_down(self.em_display_order, self.em_display_model))
-        self.em_export_layout_button.clicked.connect(partial(self.export_layout,
-                                                             model=self.em_display_model))
-        self.em_import_layout_button.clicked.connect(partial(self.import_layout,
-                                                             model=self.em_display_model))
-        self.em_reset_layout_button.clicked.connect(partial(self.reset_layout,
-                                                            model=self.em_display_model))
+        mu = partial(move_field_up, self.em_display_order, self.em_display_model)
+        md = partial(move_field_down, self.em_display_order, self.em_display_model)
+        self.em_display_order.set_movement_functions(mu, md)
+        self.em_up_button.clicked.connect(mu)
+        self.em_down_button.clicked.connect(md)
+        self.em_export_layout_button.clicked.connect(partial(self.export_layout, model=self.em_display_model))
+        self.em_import_layout_button.clicked.connect(partial(self.import_layout, model=self.em_display_model))
+        self.em_reset_layout_button.clicked.connect(partial(self.reset_layout, model=self.em_display_model))
 
-        self.qv_display_model = QVDisplayedFields(self.gui.current_db,
-                self.qv_display_order)
+        self.qv_display_model = QVDisplayedFields(self.gui.current_db, self.qv_display_order)
         self.qv_display_model.dataChanged.connect(self.changed_signal)
         self.qv_display_order.setModel(self.qv_display_model)
-        connect_lambda(self.qv_up_button.clicked, self,
-                lambda self: move_field_up(self.qv_display_order, self.qv_display_model))
-        connect_lambda(self.qv_down_button.clicked, self,
-                lambda self: move_field_down(self.qv_display_order, self.qv_display_model))
+        mu = partial(move_field_up, self.qv_display_order, self.qv_display_model)
+        md = partial(move_field_down, self.qv_display_order, self.qv_display_model)
+        self.qv_display_order.set_movement_functions(mu, md)
+        self.qv_up_button.clicked.connect(mu)
+        self.qv_down_button.clicked.connect(md)
 
-        self.tb_display_model = TBDisplayedFields(self.gui.current_db,
-                                                  self.tb_display_order,
-                                                  category_icons=self.gui.tags_view.model().category_custom_icons)
+        self.tb_display_model = TBDisplayedFields(self.gui.current_db, self.tb_display_order,
+                                  category_icons=self.gui.tags_view.model().category_custom_icons)
         self.tb_display_model.dataChanged.connect(self.changed_signal)
         self.tb_display_order.setModel(self.tb_display_model)
-        self.tb_reset_layout_button.clicked.connect(partial(self.reset_layout,
-                                                            model=self.tb_display_model))
-        self.tb_export_layout_button.clicked.connect(partial(self.export_layout,
-                                                             model=self.tb_display_model))
-        self.tb_import_layout_button.clicked.connect(partial(self.import_layout,
-                                                             model=self.tb_display_model))
+        self.tb_reset_layout_button.clicked.connect(partial(self.reset_layout, model=self.tb_display_model))
+        self.tb_export_layout_button.clicked.connect(partial(self.export_layout, model=self.tb_display_model))
+        self.tb_import_layout_button.clicked.connect(partial(self.import_layout, model=self.tb_display_model))
         self.tb_up_button.clicked.connect(self.tb_up_button_clicked)
         self.tb_down_button.clicked.connect(self.tb_down_button_clicked)
+        self.tb_display_order.set_movement_functions(self.tb_up_button_clicked, self.tb_down_button_clicked)
 
         self.tb_categories_to_part_model = TBPartitionedFields(self.gui.current_db,
-                                                               self.tb_cats_to_partition,
-                                                               category_icons=self.gui.tags_view.model().category_custom_icons)
+                                   self.tb_cats_to_partition,
+                                   category_icons=self.gui.tags_view.model().category_custom_icons)
         self.tb_categories_to_part_model.dataChanged.connect(self.changed_signal)
         self.tb_cats_to_partition.setModel(self.tb_categories_to_part_model)
         self.tb_partition_reset_button.clicked.connect(partial(self.reset_layout,
@@ -704,9 +727,8 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.tb_partition_import_layout_button.clicked.connect(partial(self.import_layout,
                                                                        model=self.tb_categories_to_part_model))
 
-        self.tb_hierarchical_cats_model = TBHierarchicalFields(self.gui.current_db,
-                                                              self.tb_hierarchical_cats,
-                                                              category_icons=self.gui.tags_view.model().category_custom_icons)
+        self.tb_hierarchical_cats_model = TBHierarchicalFields(self.gui.current_db, self.tb_hierarchical_cats,
+                                              category_icons=self.gui.tags_view.model().category_custom_icons)
         self.tb_hierarchical_cats_model.dataChanged.connect(self.changed_signal)
         self.tb_hierarchical_cats.setModel(self.tb_hierarchical_cats_model)
         self.tb_hierarchy_reset_layout_button.clicked.connect(partial(self.reset_layout,
@@ -716,15 +738,23 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.tb_hierarchy_import_layout_button.clicked.connect(partial(self.import_layout,
                                                            model=self.tb_hierarchical_cats_model))
 
+        self.bd_vertical_cats_model = BDVerticalCats(self.gui.current_db, self.tb_hierarchical_cats)
+        self.bd_vertical_cats_model.dataChanged.connect(self.changed_signal)
+        self.bd_vertical_cats.setModel(self.bd_vertical_cats_model)
+
+        self.fill_tb_search_order_box()
+        self.tb_search_order_up_button.clicked.connect(self.move_tb_search_up)
+        self.tb_search_order_down_button.clicked.connect(self.move_tb_search_down)
+        self.tb_search_order.set_movement_functions(self.move_tb_search_up, self.move_tb_search_down)
+        self.tb_search_order_reset_button.clicked.connect(self.reset_tb_search_order)
+
         self.edit_rules = EditRules(self.tabWidget)
         self.edit_rules.changed.connect(self.changed_signal)
-        self.tabWidget.addTab(self.edit_rules,
-                QIcon.ic('format-fill-color.png'), _('Column &coloring'))
+        self.tabWidget.addTab(self.edit_rules, QIcon.ic('format-fill-color.png'), _('Column &coloring'))
 
         self.icon_rules = EditRules(self.tabWidget)
         self.icon_rules.changed.connect(self.changed_signal)
-        self.tabWidget.addTab(self.icon_rules,
-                QIcon.ic('icon_choose.png'), _('Column &icons'))
+        self.tabWidget.addTab(self.icon_rules, QIcon.ic('icon_choose.png'), _('Column &icons'))
 
         self.grid_rules = EditRules(self.emblems_tab)
         self.grid_rules.changed.connect(self.changed_signal)
@@ -779,6 +809,69 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.sections_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.tabWidget.currentWidget().setFocus(Qt.FocusReason.OtherFocusReason)
         self.opt_ui_style.currentIndexChanged.connect(self.update_color_palette_state)
+
+    def initial_tab_changed(self):
+        self.sections_view.setCurrentRow(self.tabWidget.currentIndex())
+
+    def fill_tb_search_order_box(self):
+        # The tb_search_order is a directed graph of nodes with an arc to the next
+        # node in the sequence. Node 0 (zero) is the start node with the last node
+        # arcing back to node 0. This code linearizes the graph
+
+        choices = [(1, _('Search for books containing the current item')),
+                   (2, _('Search for books containing the current item or its children')),
+                   (3, _('Search for books not containing the current item')),
+                   (4, _('Search for books not containing the current item or its children'))]
+        icon_map = self.gui.tags_view.model().icon_state_map
+
+        order = gprefs.get('tb_search_order')
+        self.tb_search_order.clear()
+        node = 0
+        while True:
+            v = order[str(node)]
+            if v == 0:
+                break
+            item = QListWidgetItem(icon_map[v], choices[v-1][1])
+            item.setData(Qt.ItemDataRole.UserRole, choices[v-1][0])
+            self.tb_search_order.addItem(item)
+            node = v
+
+    def move_tb_search_up(self):
+        idx = self.tb_search_order.currentRow()
+        if idx <= 0:
+            return
+        item = self.tb_search_order.takeItem(idx)
+        self.tb_search_order.insertItem(idx-1, item)
+        self.tb_search_order.setCurrentRow(idx-1)
+        self.changed_signal.emit()
+
+    def move_tb_search_down(self):
+        idx = self.tb_search_order.currentRow()
+        if idx < 0 or idx == 3:
+            return
+        item = self.tb_search_order.takeItem(idx)
+        self.tb_search_order.insertItem(idx+1, item)
+        self.tb_search_order.setCurrentRow(idx+1)
+        self.changed_signal.emit()
+
+    def tb_search_order_commit(self):
+        t = {}
+        # Walk the items in the list box building the (node -> node) graph of
+        # the option order
+        node = 0
+        for i in range(0, 4):
+            v = self.tb_search_order.item(i).data(Qt.ItemDataRole.UserRole)
+            # JSON dumps converts integer keys to strings, so do it explicitly
+            t[str(node)] = v
+            node = v
+        # Add the arc from the last node back to node 0
+        t[str(node)] = 0
+        gprefs.set('tb_search_order', t)
+
+    def reset_tb_search_order(self):
+        gprefs.set('tb_search_order', gprefs.defaults['tb_search_order'])
+        self.fill_tb_search_order_box()
+        self.changed_signal.emit()
 
     def update_color_palette_state(self):
         if self.ui_style_available:
@@ -902,6 +995,7 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.tb_display_model.initialize()
         self.tb_categories_to_part_model.initialize()
         self.tb_hierarchical_cats_model.initialize()
+        self.bd_vertical_cats_model.initialize()
         db = self.gui.current_db
         mi = []
         try:
@@ -965,6 +1059,8 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.display_model.restore_defaults()
         self.em_display_model.restore_defaults()
         self.qv_display_model.restore_defaults()
+        self.bd_vertical_cats_model.restore_defaults()
+        gprefs.set('tb_search_order', gprefs.defaults['tb_search_order'])
         self.edit_rules.clear()
         self.icon_rules.clear()
         self.grid_rules.clear()
@@ -1039,6 +1135,8 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
             self.tb_display_model.commit()
             self.tb_categories_to_part_model.commit()
             self.tb_hierarchical_cats_model.commit()
+            self.bd_vertical_cats_model.commit()
+            self.tb_search_order_commit()
             self.edit_rules.commit(self.gui.current_db.prefs)
             self.icon_rules.commit(self.gui.current_db.prefs)
             self.grid_rules.commit(self.gui.current_db.prefs)
@@ -1063,6 +1161,7 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         self.update_font_display()
         gui.tags_view.set_look_and_feel()
         gui.tags_view.reread_collapse_parameters()
+        gui.tags_view.model().reset_tag_browser()
         gui.library_view.refresh_book_details(force=True)
         gui.library_view.refresh_grid()
         gui.library_view.refresh_composite_edit()

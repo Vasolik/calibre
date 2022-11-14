@@ -71,9 +71,9 @@ class InterfaceAction(QObject):
     #: key is held down.
     auto_repeat = False
 
-    #: Of the form: (text, icon_path, tooltip, keyboard shortcut)
-    #: icon, tooltip and keyboard shortcut can be None
-    #: shortcut must be a string, None or tuple of shortcuts.
+    #: Of the form: (text, icon_path, tooltip, keyboard shortcut).
+    #: icon, tooltip and keyboard shortcut can be None.
+    #: keyboard shortcut must be either a string, None or tuple of shortcuts.
     #: If None, a keyboard shortcut corresponding to the action is not
     #: registered. If you pass an empty tuple, then the shortcut is registered
     #: with no default key binding.
@@ -97,7 +97,7 @@ class InterfaceAction(QObject):
 
     all_locations = frozenset(['toolbar', 'toolbar-device', 'context-menu',
         'context-menu-device', 'toolbar-child', 'menubar', 'menubar-device',
-        'context-menu-cover-browser', 'context-menu-split'])
+        'context-menu-cover-browser', 'context-menu-split', 'searchbar'])
 
     #: Type of action
     #: 'current' means acts on the current view

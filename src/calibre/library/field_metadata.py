@@ -250,6 +250,16 @@ def _builtin_field_metadata():
                            'is_custom':False,
                            'is_category':False,
                            'is_csp': False}),
+            ('in_tag_browser', {'table':None,
+                           'column':None,
+                           'datatype':'text',
+                           'is_multiple':{},
+                           'kind':'field',
+                           'name': None,
+                           'search_terms':['in_tag_browser'],
+                           'is_custom':False,
+                           'is_category':False,
+                           'is_csp': False}),
             ('series_index',{'table':None,
                              'column':None,
                              'datatype':'float',
@@ -460,7 +470,7 @@ class FieldMetadata:
         return [k for k in self._tb_cats.keys()
                 if self._tb_cats[k]['kind']=='field' and
                    self._tb_cats[k]['datatype'] is not None and
-                   k not in ('au_map', 'marked', 'ondevice', 'cover', 'series_sort') and
+                   k not in ('au_map', 'marked', 'ondevice', 'cover', 'series_sort', 'in_tag_browser') and
                    not self.is_series_index(k)]
 
     def standard_field_keys(self):

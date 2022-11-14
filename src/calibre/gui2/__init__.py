@@ -28,6 +28,7 @@ from calibre.constants import (
     islinux, ismacos, iswindows, isxp, numeric_version, plugins_loc
 )
 from calibre.ebooks.metadata import MetaInformation
+from calibre.gui2.geometry import geometry_for_restore_as_dict
 from calibre.gui2.linux_file_dialogs import (
     check_for_linux_native_dialogs, linux_native_dialog
 )
@@ -44,7 +45,7 @@ from calibre.utils.resources import user_dir
 from polyglot import queue
 from polyglot.builtins import iteritems, string_or_bytes
 
-del pqc
+del pqc, geometry_for_restore_as_dict
 NO_URL_FORMATTING = QUrl.UrlFormattingOption.None_
 
 
@@ -283,6 +284,8 @@ def create_defs():
 
     defs['action-layout-toolbar-child'] = ()
 
+    defs['action-layout-searchbar'] = ('Saved searches',)
+
     defs['action-layout-context-menu'] = (
             'Edit Metadata', 'Send To Device', 'Save To Disk',
             'Connect Share', 'Copy To Library', None,
@@ -392,6 +395,9 @@ def create_defs():
     defs['edit_metadata_bulk_cc_label_length'] = 25
     defs['edit_metadata_single_cc_label_length'] = 12
     defs['edit_metadata_templates_only_F2_on_booklist'] = False
+    # JSON dumps converts integer keys to strings, so do it explicitly
+    defs['tb_search_order'] = {'0': 1, '1': 2, '2': 3, '3': 4, '4': 0}
+    defs['search_tool_bar_shows_text'] = True
 
     def migrate_tweak(tweak_name, pref_name):
         # If the tweak has been changed then leave the tweak in the file so
@@ -1557,7 +1563,7 @@ def elided_text(text, font=None, width=300, pos='middle'):
 
 if is_running_from_develop:
     from calibre.build_forms import build_forms
-    build_forms(os.environ['CALIBRE_DEVELOP_FROM'], check_for_migration=True)
+    build_forms(os.path.abspath(os.environ['CALIBRE_DEVELOP_FROM']), check_for_migration=True)
 
 
 def event_type_name(ev_or_etype):

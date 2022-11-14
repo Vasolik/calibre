@@ -264,7 +264,9 @@ class TagTreeItem:  # {{{
         '''
         if set_to is None:
             while True:
-                self.tag.state = (self.tag.state + 1)%5
+                tag_search_order_graph = gprefs.get('tb_search_order')
+                # JSON dumps converts integer keys to strings, so do it explicitly
+                self.tag.state = tag_search_order_graph[str(self.tag.state)]
                 if self.tag.state == TAG_SEARCH_STATES['mark_plus'] or \
                         self.tag.state == TAG_SEARCH_STATES['mark_minus']:
                     if self.tag.is_searchable:
@@ -321,6 +323,7 @@ class TagsModel(QAbstractItemModel):  # {{{
     search_item_renamed = pyqtSignal()
     tag_item_renamed = pyqtSignal()
     refresh_required = pyqtSignal()
+    research_required = pyqtSignal()
     restriction_error = pyqtSignal(object)
     drag_drop_finished = pyqtSignal(object)
     user_categories_edited = pyqtSignal(object, object)
@@ -402,7 +405,7 @@ class TagsModel(QAbstractItemModel):  # {{{
         self._run_rebuild()
         self.endResetModel()
 
-    def reset_tag_browser_categories(self):
+    def reset_tag_browser(self):
         self.beginResetModel()
         hidden_cats = self.db.new_api.pref('tag_browser_hidden_categories', {})
         self.hidden_categories = set()
@@ -804,6 +807,28 @@ class TagsModel(QAbstractItemModel):  # {{{
                 new_children.append(node)
         self.root_item.children = new_children
         self.root_item.children.sort(key=lambda x: self.row_map.index(x.category_key))
+        if self.set_in_tag_browser():
+            self.research_required.emit()
+
+    def set_in_tag_browser(self):
+        # If the filter isn't set then don't build the list, improving
+        # performance significantly for large libraries or libraries with lots
+        # of categories. This means that in_tag_browser:true with no filter will
+        # return all books. This is incorrect in the rare case where the
+        # category list in the tag browser doesn't contain a category like
+        # authors that by definition matches all books because all books have an
+        # author. If really needed the user can work around this 'error' by
+        # clicking on the categories of interest with the connector set to 'or'.
+        if self.filter_categories_by:
+            id_set = set()
+            for x in (a for a in self.root_item.children if a.category_key != 'search' and not a.is_gst):
+                for t in x.child_tags():
+                    id_set |= t.tag.id_set
+        else:
+            id_set = None
+        changed = self.db.data.get_in_tag_browser() != id_set
+        self.db.data.set_in_tag_browser(id_set)
+        return changed
 
     def get_category_editor_data(self, category):
         for cat in self.root_item.children:
@@ -1149,9 +1174,15 @@ class TagsModel(QAbstractItemModel):  # {{{
 
         # Get the categories
         try:
+            # We must disable the in_tag_browser ids because we want all the
+            # categories that will be filtered later. They might be restricted
+            # by a VL or extra restriction.
+            old_in_tb = self.db.data.get_in_tag_browser()
+            self.db.data.set_in_tag_browser(None)
             data = self.db.new_api.get_categories(sort=sort,
                     book_ids=self.get_book_ids_to_use(),
                     first_letter_sort=self.collapse_model == 'first letter')
+            self.db.data.set_in_tag_browser(old_in_tb)
         except Exception as e:
             traceback.print_exc()
             data = self.db.new_api.get_categories(sort=sort,
@@ -1173,10 +1204,13 @@ class TagsModel(QAbstractItemModel):  # {{{
                     data[category] = [t for t in data[category]
                         if lower(t.name).find(filter_by) >= 0]
 
-        # Build a dict of the keys that have data
+        # Build a dict of the keys that have data.
+        # Always add user categories so that the constructed hierarchy works.
+        # This means that empty categories will be displayed unless the 'hide
+        # empty categories' box is checked.
         tb_categories = self.db.field_metadata
         for category in tb_categories:
-            if category in data:  # The search category can come and go
+            if category in data or category.startswith('@'):
                 self.categories[category] = tb_categories[category]['name']
 
         # Now build the list of fields in display order. A lot of this is to
@@ -1467,9 +1501,10 @@ class TagsModel(QAbstractItemModel):  # {{{
                 datatype = cache.field_metadata.get(key, {}).get('datatype', '*****')
                 if datatype != 'composite':
                     id_ = cache.get_item_id(key, val)
-                    v = cache.books_for_field(key, id_)
-                    if v:
-                        new_cat.append([val, key, 0])
+                    if id_ is not None:
+                        v = cache.books_for_field(key, id_)
+                        if v:
+                            new_cat.append([val, key, 0])
             if new_cat:
                 all_cats[cat] = new_cat
         self.db.new_api.set_pref('user_categories', all_cats)

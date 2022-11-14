@@ -8,9 +8,9 @@ from collections import namedtuple
 from functools import partial
 from qt.core import (
     QAction, QApplication, QClipboard, QColor, QDialog, QEasingCurve, QIcon,
-    QKeySequence, QLayout, QMenu, QMimeData, QPainter, QPen, QPixmap,
+    QKeySequence, QMenu, QMimeData, QPainter, QPen, QPixmap, QSplitter,
     QPropertyAnimation, QRect, QSize, QSizePolicy, Qt, QUrl, QWidget, pyqtProperty,
-    pyqtSignal
+    QTimer, pyqtSignal
 )
 
 from calibre import fit_image, sanitize_file_name
@@ -69,8 +69,30 @@ def copy_all(text_browser):
     mf = getattr(text_browser, 'details', text_browser)
     c = QApplication.clipboard()
     md = QMimeData()
-    md.setText(mf.toPlainText())
-    md.setHtml(mf.toHtml())
+    html = mf.toHtml()
+    md.setHtml(html)
+    from html5_parser import parse
+    from lxml import etree
+    root = parse(html)
+    for x in ('table', 'tr', 'tbody'):
+        for tag in root.iterdescendants(x):
+            tag.tag = 'div'
+    for tag in root.iterdescendants('td'):
+        tt = etree.tostring(tag, method='text', encoding='unicode')
+        tag.tag = 'span'
+        for child in tuple(tag):
+            tag.remove(child)
+        tag.text = tt.strip()
+    for tag in root.iterdescendants('a'):
+        tag.attrib.pop('href', None)
+    from calibre.utils.html2text import html2text
+    simplified_html = etree.tostring(root, encoding='unicode')
+    txt = html2text(simplified_html, single_line_break=True).strip()
+    if iswindows:
+        txt = '\r\n'.join(txt.splitlines())
+    # print(simplified_html)
+    # print(txt)
+    md.setText(txt)
     c.setMimeData(md)
 
 
@@ -176,7 +198,9 @@ def init_find_in_grouped_search(menu, field, value, book_info):
 
 
 def render_html(mi, vertical, widget, all_fields=False, render_data_func=None, pref_name='book_display_fields'):  # {{{
-    func = render_data_func or render_data
+    from calibre.gui2.ui import get_gui
+    func = render_data_func or partial(render_data,
+                   vertical_fields=get_gui().current_db.prefs.get('book_details_vertical_categories') or ())
     try:
         table, comment_fields = func(mi, all_fields=all_fields,
                 use_roman_numbers=config['use_roman_numerals_for_series_number'], pref_name=pref_name)
@@ -233,13 +257,15 @@ def get_field_list(fm, use_defaults=False, pref_name='book_display_fields'):
     return [(f, d) for f, d in fieldlist if f in available]
 
 
-def render_data(mi, use_roman_numbers=True, all_fields=False, pref_name='book_display_fields'):
+def render_data(mi, use_roman_numbers=True, all_fields=False, pref_name='book_display_fields',
+                vertical_fields=()):
     field_list = get_field_list(getattr(mi, 'field_metadata', field_metadata), pref_name=pref_name)
     field_list = [(x, all_fields or display) for x, display in field_list]
     return mi_to_html(
         mi, field_list=field_list, use_roman_numbers=use_roman_numbers, rtl=is_rtl(),
         rating_font=rating_font(), default_author_link=default_author_link(),
-        comments_heading_pos=gprefs['book_details_comments_heading_pos'], for_qt=True
+        comments_heading_pos=gprefs['book_details_comments_heading_pos'], for_qt=True,
+        vertical_fields=vertical_fields
     )
 
 # }}}
@@ -544,6 +570,9 @@ class CoverView(QWidget):  # {{{
     def setCurrentPixmapSize(self, val):
         self._current_pixmap_size = val
 
+    def minimumSizeHint(self):
+        return QSize(100, 100)
+
     def do_layout(self):
         if self.rect().width() == 0 or self.rect().height() == 0:
             return
@@ -648,7 +677,7 @@ class CoverView(QWidget):  # {{{
         book_id = self.data.get('id')
         if not book_id:
             return
-        from calibre.utils.img import image_from_x, remove_borders_from_image
+        from calibre.utils.img import remove_borders_from_image
         img = image_from_x(self.pixmap)
         nimg = remove_borders_from_image(img)
         if nimg is not img:
@@ -906,37 +935,39 @@ class BookInfo(HTMLDisplay):
 # }}}
 
 
-class DetailsLayout(QLayout):  # {{{
+class DetailsLayout(QSplitter):  # {{{
 
     def __init__(self, vertical, parent):
-        QLayout.__init__(self, parent)
+        orientation = Qt.Orientation.Vertical if vertical else Qt.Orientation.Horizontal
+        super().__init__(orientation, parent)
         self.vertical = vertical
         self._children = []
-
         self.min_size = QSize(190, 200) if vertical else QSize(120, 120)
         self.setContentsMargins(0, 0, 0, 0)
+        self.splitterMoved.connect(self.do_splitter_moved,
+                                   type=Qt.ConnectionType.QueuedConnection)
+        self.resize_timer = QTimer()
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.setInterval(5)
+        self.resize_timer.timeout.connect(self.do_resize)
+
+    def do_resize(self, *args):
+        super().resizeEvent(self._resize_ev)
+        self.do_layout(self.rect())
+
+    def resizeEvent(self, ev):
+        if self.resize_timer.isActive():
+            self.resize_timer.stop()
+        self._resize_ev = ev
+        self.resize_timer.start()
 
     def minimumSize(self):
         return QSize(self.min_size)
 
-    def addItem(self, child):
+    def addWidget(self, child):
         if len(self._children) > 2:
             raise ValueError('This layout can only manage two children')
         self._children.append(child)
-
-    def itemAt(self, i):
-        try:
-            return self._children[i]
-        except:
-            pass
-        return None
-
-    def takeAt(self, i):
-        try:
-            self._children.pop(i)
-        except:
-            pass
-        return None
 
     def count(self):
         return len(self._children)
@@ -944,16 +975,29 @@ class DetailsLayout(QLayout):  # {{{
     def sizeHint(self):
         return QSize(self.min_size)
 
+    def restore_splitter_state(self):
+        s = gprefs.get('book_details_widget_splitter_state')
+        if s is None:
+            # Without this on first start the splitter is rendered over the cover
+            self.setSizes([20, 80])
+        else:
+            self.restoreState(s)
+        self.setOrientation(Qt.Orientation.Vertical if self.vertical else Qt.Orientation.Horizontal)
+
     def setGeometry(self, r):
-        QLayout.setGeometry(self, r)
+        super().setGeometry(r)
         self.do_layout(r)
 
+    def do_splitter_moved(self, *args):
+        gprefs['book_details_widget_splitter_state'] = bytearray(self.saveState())
+        self._children[0].do_layout()
+
     def cover_height(self, r):
-        if not self._children[0].widget().isVisible():
+        if not self._children[0].isVisible():
             return 0
         mh = min(int(r.height()//2), int(4/3 * r.width())+1)
         try:
-            ph = self._children[0].widget().pixmap.height()
+            ph = self._children[0].pixmap.height()
         except:
             ph = 0
         if ph > 0:
@@ -961,11 +1005,11 @@ class DetailsLayout(QLayout):  # {{{
         return mh
 
     def cover_width(self, r):
-        if not self._children[0].widget().isVisible():
+        if not self._children[0].isVisible():
             return 0
         mw = 1 + int(3/4 * r.height())
         try:
-            pw = self._children[0].widget().pixmap.width()
+            pw = self._children[0].pixmap.width()
         except:
             pw = 0
         if pw > 0:
@@ -975,7 +1019,11 @@ class DetailsLayout(QLayout):  # {{{
     def do_layout(self, rect):
         if len(self._children) != 2:
             return
-        left, top, right, bottom = self.getContentsMargins()
+        cm = self.contentsMargins()
+        left = cm.left()
+        top = cm.top()
+        right = cm.right()
+        bottom = cm.top()
         r = rect.adjusted(+left, +top, -right, -bottom)
         x = r.x()
         y = r.y()
@@ -983,20 +1031,19 @@ class DetailsLayout(QLayout):  # {{{
         if self.vertical:
             ch = self.cover_height(r)
             cover.setGeometry(QRect(x, y, r.width(), ch))
-            cover.widget().do_layout()
             y += ch + 5
             details.setGeometry(QRect(x, y, r.width(), r.height()-ch-5))
         else:
             cw = self.cover_width(r)
             cover.setGeometry(QRect(x, y, cw, r.height()))
-            cover.widget().do_layout()
             x += cw + 5
             details.setGeometry(QRect(x, y, r.width() - cw - 5, r.height()))
-
+        self.restore_splitter_state()  # only required on first call to do_layout, but ...
+        cover.do_layout()
 # }}}
 
 
-class BookDetails(QWidget):  # {{{
+class BookDetails(DetailsLayout):  # {{{
 
     show_book_info = pyqtSignal()
     open_containing_folder = pyqtSignal(int)
@@ -1068,11 +1115,10 @@ class BookDetails(QWidget):  # {{{
     # }}}
 
     def __init__(self, vertical, parent=None):
-        QWidget.__init__(self, parent)
+        DetailsLayout.__init__(self, vertical, parent)
         self.last_data = {}
         self.setAcceptDrops(True)
-        self._layout = DetailsLayout(vertical, self)
-        self.setLayout(self._layout)
+        self._layout = self
         self.current_path = ''
 
         self.cover_view = CoverView(vertical, self)

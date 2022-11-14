@@ -6,7 +6,7 @@ from collections import OrderedDict
 from contextlib import suppress
 from copy import deepcopy
 from qt.core import (
-    QApplication, QCheckBox, QColor, QColorDialog, QDialog, QDialogButtonBox,
+    QCheckBox, QColor, QColorDialog, QDialog, QDialogButtonBox,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QIcon, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMenu, QPixmap, QPushButton, QSize,
     QSizePolicy, QSpinBox, Qt, QTabWidget, QTimer, QToolButton, QVBoxLayout, QWidget,
@@ -335,7 +335,7 @@ class CoverSettingsWidget(QWidget):
 
     @property
     def current_colors(self):
-        for name, li in iteritems(self.colors_map):
+        for name, li in self.colors_map.items():
             if li.isSelected():
                 return name
 
@@ -397,7 +397,10 @@ class CoverSettingsWidget(QWidget):
                 self.colors_list.item(i).setSelected(False)
 
     def create_color_scheme(self):
-        scheme = self.colors_map[self.current_colors].data(Qt.ItemDataRole.UserRole)
+        cs = self.current_colors
+        if cs is None:
+            cs = tuple(self.colors_map.keys())[0]
+        scheme = self.colors_map[cs].data(Qt.ItemDataRole.UserRole)
         d = CreateColorScheme('#' + _('My Color Scheme'), scheme, set(self.colors_map), parent=self)
         if d.exec() == QDialog.DialogCode.Accepted:
             name, scheme = d.data
@@ -554,9 +557,7 @@ class CoverSettingsDialog(QDialog):
             ' the list of checked styles/colors.'))
 
         self.resize(self.sizeHint())
-        geom = gprefs.get('cover_settings_dialog_geom', None)
-        if geom is not None:
-            QApplication.instance().safe_restore_geometry(self, geom)
+        self.restore_geometry(gprefs, 'cover_settings_dialog_geom')
         self.prefs_for_rendering = None
 
     def restore_defaults(self):
@@ -592,7 +593,7 @@ class CoverSettingsDialog(QDialog):
 
     def _save_settings(self):
         gprefs.set('cover_generation_save_settings_for_future', self.save_settings.isChecked())
-        gprefs.set('cover_settings_dialog_geom', bytearray(self.saveGeometry()))
+        self.save_geometry(gprefs, 'cover_settings_dialog_geom')
         self.settings.save_state()
 
     def accept(self):

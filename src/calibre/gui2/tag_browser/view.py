@@ -504,10 +504,24 @@ class TagsView(QTreeView):  # {{{
 
     def context_menu_handler(self, action=None, category=None,
                              key=None, index=None, search_state=None,
-                             is_first_letter=False, ignore_vl=False):
+                             is_first_letter=False, ignore_vl=False,
+                             extra=None):
         if not action:
             return
+        from calibre.gui2.ui import get_gui
         try:
+            if action == 'dont_collapse_category':
+                if key not in extra:
+                    extra.append(key)
+                self.db.prefs.set('tag_browser_dont_collapse', extra)
+                self.recount()
+                return
+            if action == 'collapse_category':
+                if key in extra:
+                    extra.remove(key)
+                self.db.prefs.set('tag_browser_dont_collapse', extra)
+                self.recount()
+                return
             if action == 'set_icon':
                 try:
                     path = choose_files(self, 'choose_category_icon',
@@ -585,7 +599,6 @@ class TagsView(QTreeView):  # {{{
                 self._toggle(index, set_to=search_state)
                 return
             if action == "raw_search":
-                from calibre.gui2.ui import get_gui
                 get_gui().get_saved_search_text(search_name='search:' + key)
                 return
             if action == 'add_to_category':
@@ -637,6 +650,10 @@ class TagsView(QTreeView):  # {{{
                 return
             if action == 'edit_author_link':
                 self.author_sort_edit.emit(self, index, False, True, False)
+                return
+            if action == 'remove_format':
+                gui = get_gui()
+                gui.iactions['Remove Books'].remove_format_from_selected_books(key)
                 return
 
             reset_filter_categories = True
@@ -973,11 +990,18 @@ class TagsView(QTreeView):  # {{{
                     self.context_menu.addAction(_('Manage Saved searches'),
                         partial(self.context_menu_handler, action='manage_searches',
                                 category=tag.name if tag else None))
+                elif key == 'formats' and tag is not None:
+                    self.context_menu.addAction(_('Remove the {} format from selected books').format(tag.name), partial(
+                        self.context_menu_handler, action='remove_format', key=tag.name))
 
                 # Hide/Show/Restore categories
                 self.context_menu.addSeparator()
-                self.context_menu.addAction(_('Hide category %s') % category.replace('&', '&&'),
-                    partial(self.context_menu_handler, action='hide',
+                # Because of the strange way hierarchy works in user categories
+                # where child nodes actually exist we must limit hiding to top-
+                # level categories, which will hide that category and children
+                if not key.startswith('@') or '.' not in key:
+                    self.context_menu.addAction(_('Hide category %s') % category.replace('&', '&&'),
+                        partial(self.context_menu_handler, action='hide',
                             category=key)).setIcon(QIcon.ic('minus.png'))
                 add_show_hidden_categories()
 
@@ -1006,6 +1030,21 @@ class TagsView(QTreeView):  # {{{
                 self.context_menu.addSeparator()
             add_show_hidden_categories()
 
+        # partioning. If partitioning is active, provide a way to turn it on or
+        # off for this category.
+        if gprefs['tags_browser_partition_method'] != 'disable':
+            m = self.context_menu
+            p = self.db.prefs.get('tag_browser_dont_collapse', gprefs['tag_browser_dont_collapse'])
+            if key in p:
+                a = m.addAction(_('Sub-categorize {}').format(category),
+                                partial(self.context_menu_handler, action='collapse_category',
+                                        category=category, key=key, extra=p))
+            else:
+                a = m.addAction(_("Don't sub-categorize {}").format(category),
+                                partial(self.context_menu_handler, action='dont_collapse_category',
+                                        category=category, key=key, extra=p))
+            a.setIcon(QIcon.ic('config.png'))
+        # Set the partitioning scheme
         m = self.context_menu.addMenu(_('Change sub-categorization scheme'))
         m.setIcon(QIcon.ic('config.png'))
         da = m.addAction(_('Disable'),

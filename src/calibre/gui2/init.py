@@ -8,7 +8,7 @@ __docformat__ = 'restructuredtext en'
 import functools
 from qt.core import (
     QAction, QApplication, QDialog, QEvent, QIcon, QLabel, QMenu, QPixmap, QUrl,
-    QSizePolicy, QSplitter, QStackedWidget, QStatusBar, QStyle, QStyleOption,
+    QSizePolicy, QStackedWidget, QStatusBar, QStyle, QStyleOption, QSplitter,
     QStylePainter, Qt, QTabBar, QTimer, QToolButton, QVBoxLayout, QWidget
 )
 
@@ -115,7 +115,7 @@ class LibraryViewMixin:  # {{{
 class QuickviewSplitter(QSplitter):  # {{{
 
     def __init__(self, parent=None, orientation=Qt.Orientation.Vertical, qv_widget=None):
-        QSplitter.__init__(self, parent=parent, orientation=orientation)
+        super().__init__(parent=parent, orientation=orientation)
         self.splitterMoved.connect(self.splitter_moved)
         self.setChildrenCollapsible(False)
         self.qv_widget = qv_widget
@@ -124,7 +124,7 @@ class QuickviewSplitter(QSplitter):  # {{{
         gprefs['quickview_dialog_heights'] = self.sizes()
 
     def resizeEvent(self, *args):
-        QSplitter.resizeEvent(self, *args)
+        super().resizeEvent(*args)
         if self.sizes()[1] != 0:
             gprefs['quickview_dialog_heights'] = self.sizes()
 
@@ -400,7 +400,7 @@ class VLTabs(QTabBar):  # {{{
         self.currentChanged.connect(self.tab_changed)
         self.tabMoved.connect(self.tab_moved, type=Qt.ConnectionType.QueuedConnection)
         self.tabCloseRequested.connect(self.tab_close)
-        self.setVisible(gprefs['show_vl_tabs'])
+        self.update_visibility()
         self.next_action = a = QAction(self)
         a.triggered.connect(partial(self.next_tab, delta=1)), self.gui.addAction(a)
         self.previous_action = a = QAction(self)
@@ -421,14 +421,17 @@ class VLTabs(QTabBar):  # {{{
             idx = (self.currentIndex() + delta) % self.count()
             self.setCurrentIndex(idx)
 
+    def update_visibility(self):
+        self.setVisible(gprefs['show_vl_tabs'] and self.count() > 1)
+
     def enable_bar(self):
         gprefs['show_vl_tabs'] = True
-        self.setVisible(True)
+        self.update_visibility()
         self.gui.set_number_of_books_shown()
 
     def disable_bar(self):
         gprefs['show_vl_tabs'] = False
-        self.setVisible(False)
+        self.update_visibility()
         self.gui.set_number_of_books_shown()
 
     def lock_tab(self):
@@ -438,15 +441,18 @@ class VLTabs(QTabBar):  # {{{
     def unlock_tab(self):
         gprefs['vl_tabs_closable'] = True
         self.setTabsClosable(True)
-        try:
-            self.tabButton(0, QTabBar.ButtonPosition.RightSide).setVisible(False)
-        except AttributeError:
-            try:
-                self.tabButton(0, QTabBar.ButtonPosition.LeftSide).setVisible(False)
-            except AttributeError:
-                # On some OS X machines (using native style) the tab button is
-                # on the left
-                pass
+        for idx in range(self.count()):
+            if not self.tabData(idx):
+                try:
+                    self.tabButton(idx, QTabBar.ButtonPosition.RightSide).setVisible(False)
+                except AttributeError:
+                    try:
+                        self.tabButton(idx, QTabBar.ButtonPosition.LeftSide).setVisible(False)
+                    except AttributeError:
+                        # On some OS X machines (using native style) the tab button is
+                        # on the left
+                        pass
+                break
 
     def tab_changed(self, idx):
         if self.ignore_tab_changed:
@@ -515,6 +521,7 @@ class VLTabs(QTabBar):  # {{{
                 # On some OS X machines (using native style) the tab button is
                 # on the left
                 pass
+        self.update_visibility()
 
     def update_current(self):
         self.rebuild()
