@@ -9,10 +9,8 @@ import os
 import re
 import traceback
 from contextlib import closing, suppress
-from qt.core import (
-    QAbstractListModel, QDir, QIcon, QItemSelection, QItemSelectionModel, Qt,
-    QWizard, QWizardPage, pyqtSignal
-)
+
+from qt.core import QAbstractListModel, QDir, QIcon, QItemSelection, QItemSelectionModel, Qt, QWizard, QWizardPage, pyqtSignal
 
 from calibre import __appname__
 from calibre.constants import filesystem_encoding, isportable, iswindows
@@ -24,7 +22,7 @@ from calibre.gui2.wizard.library_ui import Ui_WizardPage as LibraryUI
 from calibre.gui2.wizard.send_email import smtp_prefs
 from calibre.gui2.wizard.stanza_ui import Ui_WizardPage as StanzaUI
 from calibre.utils.config import dynamic, prefs
-from calibre.utils.localization import localize_user_manual_link
+from calibre.utils.localization import _, localize_user_manual_link
 from polyglot.builtins import iteritems
 
 # Devices {{{
@@ -134,6 +132,12 @@ class KindleVoyage(Kindle):
     untranslated_name = name = 'Kindle Voyage/Oasis'
     id = 'kindle_voyage'
     output_profile = 'kindle_voyage'
+
+
+class KindleScribe(Kindle):
+    untranslated_name = name = 'Kindle Scribe'
+    id = 'kindle_scribe'
+    output_profile = 'kindle_scribe'
 
 
 class Sony505(Device):
@@ -665,7 +669,7 @@ class DevicePage(QWizardPage, DeviceUI):
     def nextId(self):
         idx = list(self.device_view.selectionModel().selectedIndexes())[0]
         dev = self.dev_model.data(idx, Qt.ItemDataRole.UserRole)
-        if dev in (Kindle, KindleDX, KindleFire, KindlePW, KindleVoyage):
+        if dev in (Kindle, KindleDX, KindleFire, KindlePW, KindleVoyage, KindleScribe):
             return KindlePage.ID
         if dev is iPhone:
             return StanzaPage.ID
@@ -710,9 +714,7 @@ class LibraryPage(QWizardPage, LibraryUI):
     def init_languages(self):
         self.language.blockSignals(True)
         self.language.clear()
-        from calibre.utils.localization import (
-            available_translations, get_lang, get_language, get_lc_messages_path
-        )
+        from calibre.utils.localization import available_translations, get_lang, get_language, get_lc_messages_path
         lang = get_lang()
         lang = get_lc_messages_path(lang) if lang else lang
         if lang is None or lang not in available_translations():

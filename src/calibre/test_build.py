@@ -18,6 +18,8 @@ import time
 import unittest
 
 from calibre.constants import islinux, ismacos, iswindows, plugins_loc
+from calibre.utils.resources import get_image_path as I
+from calibre.utils.resources import get_path as P
 from polyglot.builtins import iteritems
 
 is_ci = os.environ.get('CI', '').lower() == 'true'
@@ -60,9 +62,11 @@ class BuildTest(unittest.TestCase):
         ldr = importlib.import_module('calibre').__spec__.loader.get_resource_reader()
         self.assertIn('ebooks', ldr.contents())
         try:
-            raw = ldr.open_resource('__init__.py').read()
+            with ldr.open_resource('__init__.py') as f:
+                raw = f.read()
         except FileNotFoundError:
-            raw = ldr.open_resource('__init__.pyc').read()
+            with ldr.open_resource('__init__.pyc') as f:
+                raw = f.read()
         self.assertGreater(len(raw), 1024)
 
     def test_regex(self):
@@ -95,6 +99,12 @@ class BuildTest(unittest.TestCase):
         import lzma
         lzma.open
 
+    def test_zstd(self):
+        from pyzstd import compress, decompress
+        data = os.urandom(4096)
+        cdata = compress(data)
+        self.assertEqual(data, decompress(cdata))
+
     def test_html5lib(self):
         import html5lib.html5parser  # noqa
         from html5lib import parse  # noqa
@@ -113,12 +123,18 @@ class BuildTest(unittest.TestCase):
         from speechd.client import SSIPClient
         del SSIPClient
 
+    @unittest.skipIf('SKIP_SPEECH_TESTS' in os.environ, 'Speech support is opted out')
+    def test_piper(self):
+        import subprocess
+
+        from calibre.constants import piper_cmdline
+        self.assertTrue(piper_cmdline())
+        raw = subprocess.check_output(piper_cmdline() + ('-h',), stderr=subprocess.STDOUT).decode()
+        self.assertIn('--sentence_silence', raw)
+
     def test_zeroconf(self):
         import ifaddr
         import zeroconf as z
-
-        from calibre.devices.smart_device_app.driver import monkeypatch_zeroconf
-        monkeypatch_zeroconf()
         del z
         del ifaddr
 
@@ -128,8 +144,8 @@ class BuildTest(unittest.TestCase):
             # libusb fails to initialize in containers without USB subsystems
             exclusions.update(set('libusb libmtp'.split()))
         from importlib import import_module
-        from importlib.resources import contents
-        for name in contents('calibre_extensions'):
+        from importlib.resources import files
+        for name in (path.name for path in files('calibre_extensions').iterdir()):
             if name in exclusions:
                 if name in ('libusb', 'libmtp'):
                     # Just check that the DLL can be loaded
@@ -150,6 +166,10 @@ class BuildTest(unittest.TestCase):
     def test_certgen(self):
         from calibre.utils.certgen import create_key_pair
         create_key_pair()
+
+    def test_fonttools(self):
+        from fontTools.subset import main
+        main
 
     def test_msgpack(self):
         from calibre.utils.date import utcnow
@@ -288,6 +308,11 @@ class BuildTest(unittest.TestCase):
         m.close()
         self.assertEqual(winutil.parse_cmdline('"c:\\test exe.exe" "some arg" 2'), ('c:\\test exe.exe', 'some arg', '2'))
 
+    def test_ffmpeg(self):
+        from calibre_extensions.ffmpeg import resample_raw_audio_16bit
+        data = os.urandom(22050 * 2)
+        resample_raw_audio_16bit(data, 22050, 44100)
+
     def test_sqlite(self):
         import sqlite3
         conn = sqlite3.connect(':memory:')
@@ -303,9 +328,11 @@ class BuildTest(unittest.TestCase):
     def test_qt(self):
         if is_sanitized:
             raise unittest.SkipTest('Skipping Qt build test as sanitizer is enabled')
-        from qt.core import (
-            QApplication, QFontDatabase, QImageReader, QNetworkAccessManager, QTimer, QSslSocket
-        )
+        from qt.core import QApplication, QFontDatabase, QImageReader, QLoggingCategory, QNetworkAccessManager, QSslSocket, QTimer
+        QLoggingCategory.setFilterRules('''qt.webenginecontext.debug=true''')
+        if hasattr(os, 'geteuid') and os.geteuid() == 0:
+            # likely a container build, webengine cannot run as root with sandbox
+            os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = '--no-sandbox'
         from qt.webengine import QWebEnginePage
 
         from calibre.utils.img import image_from_data, image_to_data, test
@@ -335,6 +362,15 @@ class BuildTest(unittest.TestCase):
         try:
             ensure_app()
             self.assertGreaterEqual(len(QFontDatabase.families()), 5, 'The QPA headless plugin is not able to locate enough system fonts via fontconfig')
+
+            if 'SKIP_SPEECH_TESTS' not in os.environ:
+                from qt.core import QMediaDevices, QTextToSpeech
+
+                available_tts_engines = tuple(x for x in QTextToSpeech.availableEngines() if x != 'mock')
+                self.assertTrue(available_tts_engines)
+
+                QMediaDevices.audioOutputs()
+
             from calibre.ebooks.oeb.transforms.rasterize import rasterize_svg
             img = rasterize_svg(as_qimage=True)
             self.assertFalse(img.isNull())
@@ -362,7 +398,12 @@ class BuildTest(unittest.TestCase):
                 p.runJavaScript('1 + 1', callback)
                 p.printToPdf(print_callback)
 
+            def render_process_crashed(status, exit_code):
+                print('Qt WebEngine Render process crashed with status:', status, 'and exit code:', exit_code)
+                QApplication.instance().quit()
+
             p.titleChanged.connect(do_webengine_test)
+            p.renderProcessTerminated.connect(render_process_crashed)
             p.runJavaScript(f'document.title = "test-run-{os.getpid()}";')
             timeout = 10
             QTimer.singleShot(timeout * 1000, lambda: QApplication.instance().quit())
@@ -379,6 +420,10 @@ class BuildTest(unittest.TestCase):
             if display_env_var is not None:
                 os.environ['DISPLAY'] = display_env_var
 
+    def test_pykakasi(self):
+        from calibre.ebooks.unihandecode.jadecoder import Jadecoder
+        self.assertEqual(Jadecoder().decode("自転車生活の愉しみ"), 'Jitensha Seikatsu no Tanoshi mi')
+
     def test_imaging(self):
         from PIL import Image
         try:
@@ -389,12 +434,27 @@ class BuildTest(unittest.TestCase):
         except ImportError:
             from PIL import _imaging, _imagingft, _imagingmath
         _imaging, _imagingmath, _imagingft
-        i = Image.open(I('lt.png', allow_user_override=False))
-        self.assertGreaterEqual(i.size, (20, 20))
-        i = Image.open(P('catalog/DefaultCover.jpg', allow_user_override=False))
-        self.assertGreaterEqual(i.size, (20, 20))
+        from io import StringIO
 
-    @unittest.skipUnless(iswindows and not is_ci, 'File dialog helper only used on windows (non-continuous-itegration)')
+        from PIL import features
+        out = StringIO()
+        features.pilinfo(out=out, supported_formats=False)
+        out = out.getvalue()
+        lines = '''\
+        --- PIL CORE support ok
+        --- FREETYPE2 support ok
+        --- WEBP support ok
+        --- JPEG support ok
+        --- ZLIB (PNG/ZIP) support ok
+        '''.splitlines()
+        for line in lines:
+            self.assertIn(line.strip(), out)
+        with Image.open(I('lt.png', allow_user_override=False)) as i:
+            self.assertGreaterEqual(i.size, (20, 20))
+        with Image.open(P('catalog/DefaultCover.jpg', allow_user_override=False)) as i:
+            self.assertGreaterEqual(i.size, (20, 20))
+
+    @unittest.skipUnless(iswindows and not is_ci, 'File dialog helper only used on windows (non-continuous-integration)')
     def test_file_dialog_helper(self):
         from calibre.gui2.win_file_dialogs import test
         test()
@@ -478,6 +538,21 @@ class BuildTest(unittest.TestCase):
             cafile = ssl.get_default_verify_paths().cafile
             if not cafile or not cafile.endswith('/mozilla-ca-certs.pem') or not os.access(cafile, os.R_OK):
                 raise AssertionError('Mozilla CA certs not loaded')
+        # On Fedora create_default_context() succeeds in the main thread but
+        # not in other threads, because upstream OpenSSL cannot read whatever
+        # shit Fedora puts in /etc/ssl, so this check makes sure our bundled
+        # OpenSSL is built with ssl dir that is not /etc/ssl
+        from threading import Thread
+        certs_loaded = False
+        def check_ssl_loading_certs():
+            nonlocal certs_loaded
+            ssl.create_default_context()
+            certs_loaded = True
+        t = Thread(target=check_ssl_loading_certs)
+        t.start()
+        t.join()
+        if not certs_loaded:
+            raise AssertionError('Failed to load SSL certificates')
 
 
 def test_multiprocessing():
@@ -499,8 +574,10 @@ def test_multiprocessing():
         p.join()
 
 
-def find_tests():
+def find_tests(only_build=False):
     ans = unittest.defaultTestLoader.loadTestsFromTestCase(BuildTest)
+    if only_build:
+        return ans
     from calibre.utils.icu_test import find_tests
     ans.addTests(find_tests())
     from tinycss.tests.main import find_tests

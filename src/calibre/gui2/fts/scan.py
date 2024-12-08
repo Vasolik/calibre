@@ -1,12 +1,9 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2022, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
-from qt.core import (
-    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QIcon, QLabel, QPushButton,
-    QRadioButton, QVBoxLayout, QWidget, pyqtSignal
-)
+
+from qt.core import QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QIcon, QLabel, QPushButton, QRadioButton, QVBoxLayout, QWidget, pyqtSignal
 
 from calibre.db.listeners import EventType
 from calibre.db.utils import IndexingProgress
@@ -34,7 +31,8 @@ class ScanProgress(QWidget):
             ' calibre speed up indexing. This is useful if you intend to leave your'
             ' computer running overnight to quickly finish the indexing.'
             ' Both your computer and calibre will be less responsive while'
-            ' fast indexing is active.'
+            ' fast indexing is active. Closing this window will automatically reset to'
+            ' slow indexing.'
         ))
         la.setWordWrap(True)
         l.addWidget(la)

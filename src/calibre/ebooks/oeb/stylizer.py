@@ -5,21 +5,29 @@ CSS property propagation class.
 __license__   = 'GPL v3'
 __copyright__ = '2008, Marshall T. Vandegrift <llasram@gmail.com>'
 
-import os, re, logging, copy, unicodedata, numbers
+import copy
+import logging
+import numbers
+import os
+import re
+import unicodedata
 from operator import itemgetter
 from weakref import WeakKeyDictionary
 from xml.dom import SyntaxErr as CSSSyntaxError
-from css_parser.css import (CSSStyleRule, CSSPageRule, CSSFontFaceRule,
-        cssproperties)
-from css_parser import (profile as cssprofiles, parseString, parseStyle, log as
-        css_parser_log, CSSParser, profiles, replaceUrls)
-from calibre import force_unicode, as_unicode
-from calibre.ebooks import unit_convert
-from calibre.ebooks.oeb.base import XHTML, XHTML_NS, CSS_MIME, OEB_STYLES, xpath, urlnormalize
-from calibre.ebooks.oeb.normalize_css import DEFAULTS, normalizers
-from css_selectors import Select, SelectorError, INAPPROPRIATE_PSEUDO_CLASSES
-from polyglot.builtins import iteritems
+
+from css_parser import CSSParser, parseString, parseStyle, profiles, replaceUrls
+from css_parser import log as css_parser_log
+from css_parser import profile as cssprofiles
+from css_parser.css import CSSFontFaceRule, CSSPageRule, CSSStyleRule, cssproperties
+from css_selectors import INAPPROPRIATE_PSEUDO_CLASSES, Select, SelectorError
 from tinycss.media3 import CSSMedia3Parser
+
+from calibre import as_unicode, force_unicode
+from calibre.ebooks import unit_convert
+from calibre.ebooks.oeb.base import CSS_MIME, OEB_STYLES, SVG, XHTML, XHTML_NS, urlnormalize, xpath
+from calibre.ebooks.oeb.normalize_css import DEFAULTS, normalizers
+from calibre.utils.resources import get_path as P
+from polyglot.builtins import iteritems
 
 css_parser_log.setLevel(logging.WARN)
 
@@ -239,7 +247,7 @@ class Stylizer:
         parser = CSSParser(fetcher=self._fetch_css_file,
                 log=logging.getLogger('calibre.css'))
         for elem in style_tags:
-            if (elem.tag == XHTML('style') and elem.get('type', CSS_MIME) in OEB_STYLES and media_ok(elem.get('media'))):
+            if (elem.tag in (XHTML('style'), SVG('style')) and elem.get('type', CSS_MIME) in OEB_STYLES and media_ok(elem.get('media'))):
                 text = elem.text if elem.text else ''
                 for x in elem:
                     t = getattr(x, 'text', None)
@@ -420,10 +428,23 @@ class Stylizer:
 
 
 no_important_properties = frozenset()
+svg_text_tags = tuple(map(SVG, ('text', 'textPath', 'tref', 'tspan')))
+
+
+def is_only_number(x: str) -> bool:
+    try:
+        float(x)
+        return True
+    except Exception:
+        return False
+
+def is_svg_text_tag(x):
+    return getattr(x, 'tag', '') in svg_text_tags
 
 
 class Style:
     MS_PAT = re.compile(r'^\s*(mso-|panose-|text-underline|tab-interval)')
+    viewport_relative_font_size: str = ''
 
     def __init__(self, element, stylizer):
         self._element = element
@@ -620,6 +641,8 @@ class Style:
                 base = self._profile.fbase
             if 'font-size' in self._style:
                 size = self._style['font-size']
+                if is_svg_text_tag(self._element) and (size.endswith('px') or is_only_number(size)):
+                    self.viewport_relative_font_size = size
                 result = normalize_fontsize(size, base)
             else:
                 result = base

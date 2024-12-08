@@ -8,14 +8,16 @@ __docformat__ = 'restructuredtext en'
 import sys
 from functools import partial
 
-from lxml.etree import tostring
 import regex
+from lxml.etree import tostring
+from tinycss.fonts3 import parse_font_family
 
 from calibre.ebooks.oeb.base import XHTML, css_text
-from calibre.ebooks.oeb.polish.cascade import iterrules, resolve_styles, iterdeclaration
+from calibre.ebooks.oeb.polish.cascade import iterdeclaration, iterrules, resolve_styles
+from calibre.utils.icu import lower as icu_lower
 from calibre.utils.icu import ord_string, safe_chr
+from calibre.utils.icu import upper as icu_upper
 from polyglot.builtins import iteritems, itervalues
-from tinycss.fonts3 import parse_font_family
 
 
 def normalize_font_properties(font):

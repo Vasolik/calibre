@@ -4,12 +4,13 @@
 
 import re
 from functools import partial
+
 from html5_parser import parse
 from lxml import etree
 
-from calibre.ebooks.oeb.parse_utils import XHTML
-from calibre.ebooks.oeb.base import OEB_DOCS, XPath
 from calibre.ebooks.metadata.tag_mapper import uniq
+from calibre.ebooks.oeb.base import OEB_DOCS, XPath
+from calibre.ebooks.oeb.parse_utils import XHTML
 from css_selectors.select import Select, get_parsed_selector
 
 
@@ -243,7 +244,10 @@ def empty(tag):
 
 
 def parse_start_tag(text):
-    tag = parse(text, namespace_elements=True, fragment_context='div')[0]
+    try:
+        tag = parse(text, namespace_elements=True, fragment_context='div')[0]
+    except IndexError as e:
+        raise ValueError(_('No tag found in: {}. The tag specification must be of the form <tag> for example: <p>')) from e
     return {'tag': tag.tag, 'attrib': tag.items()}
 
 

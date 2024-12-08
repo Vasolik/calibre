@@ -11,7 +11,7 @@ class Unian(BasicNewsRecipe):
     publication_type = 'newspaper'
     oldest_article = 7
     max_articles_per_feed = 100
-    language = 'ru'
+    language = 'ru_UK'
     cover_url = 'https://www.unian.net/images/unian-512x512.png'
     auto_cleanup = False
     no_stylesheets = True

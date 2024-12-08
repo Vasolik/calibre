@@ -12,11 +12,9 @@ import time
 from collections import defaultdict
 from functools import partial
 from itertools import repeat
-from qt.core import (
-    QDialog, QDialogButtonBox, QGridLayout, QIcon, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, Qt
-)
 from threading import Thread
+
+from qt.core import QDialog, QDialogButtonBox, QGridLayout, QIcon, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, Qt
 
 from calibre.constants import preferred_encoding
 from calibre.customize.ui import available_input_formats, available_output_formats
@@ -26,9 +24,9 @@ from calibre.gui2.threaded_jobs import ThreadedJob
 from calibre.library.save_to_disk import get_components
 from calibre.utils.config import prefs, tweaks
 from calibre.utils.icu import primary_sort_key
-from calibre.utils.smtp import (
-    compose_mail, config as email_config, extract_email_address, sendmail
-)
+from calibre.utils.resources import get_image_path as I
+from calibre.utils.smtp import compose_mail, extract_email_address, sendmail
+from calibre.utils.smtp import config as email_config
 from polyglot.binary import from_hex_unicode
 from polyglot.builtins import iteritems, itervalues
 
@@ -115,7 +113,7 @@ class Sendmail:
             from_ = opts.from_
             if not from_:
                 from_ = 'calibre <calibre@'+socket.getfqdn()+'>'
-            with lopen(attachment, 'rb') as f:
+            with open(attachment, 'rb') as f:
                 msg = compose_mail(from_, to, text, subject, f, aname)
             efrom = extract_email_address(from_)
             eto = []
@@ -169,11 +167,10 @@ def send_mails(jobnames, callback, attachments, to_s, subjects,
             # irony that they are called "tech" companies.
             # https://bugs.launchpad.net/calibre/+bug/1989282
             from calibre.utils.short_uuid import uuid4
-            if is_for_kindle(to):
+            if not is_for_kindle(to):
+                # Amazon nowadays reads metadata from attachment filename instead of
+                # file internal metadata so dont nuke the filename.
                 # https://www.mobileread.com/forums/showthread.php?t=349290
-                from calibre.utils.filenames import ascii_filename
-                aname = ascii_filename(aname)
-            else:
                 aname = f'{uuid4()}.' + aname.rpartition('.')[-1]
             subject = uuid4()
             text = uuid4()
@@ -439,8 +436,8 @@ class EmailMixin:  # {{{
                         _('in the %s format.') %
                         os.path.splitext(f)[1][1:].upper())
                 if mi.comments and gprefs['add_comments_to_email']:
-                    from calibre.utils.html2text import html2text
                     from calibre.ebooks.metadata import fmt_sidx
+                    from calibre.utils.html2text import html2text
                     if mi.series:
                         sidx=fmt_sidx(1.0 if mi.series_index is None else mi.series_index, use_roman=config['use_roman_numerals_for_series_number'])
                         texts[-1] += '\n\n' + _('{series_index} of {series}').format(series_index=sidx, series=mi.series)

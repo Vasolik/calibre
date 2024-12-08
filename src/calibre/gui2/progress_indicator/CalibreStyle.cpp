@@ -7,6 +7,7 @@
 
 #include "QProgressIndicator.h"
 #include <QPainter>
+#include <QPixmapCache>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QApplication>
 #include <QDebug>
@@ -61,6 +62,82 @@ static inline QByteArray detectDesktopEnvironment()
     return QByteArrayLiteral("UNKNOWN");
 }
 
+#ifdef Q_OS_DARWIN
+static const qreal qstyleBaseDpi = 72;
+#else
+static const qreal qstyleBaseDpi = 96;
+#endif
+
+qreal dpiScaled(qreal value, qreal dpi)
+{
+    return value * dpi / qstyleBaseDpi;
+}
+
+static QPixmap styleCachePixmap(const QSize &size)
+{
+    const qreal pixelRatio = qApp->devicePixelRatio();
+    QPixmap cachePixmap = QPixmap(size * pixelRatio);
+    cachePixmap.setDevicePixelRatio(pixelRatio);
+    return cachePixmap;
+}
+
+
+static void
+draw_arrow(Qt::ArrowType type, QPainter *painter, const QStyleOption *option, const QRect &rect, const QColor &color) {
+    if (rect.isEmpty())
+        return;
+
+    const qreal dpi = std::max(76.0, option->fontMetrics.fontDpi());
+    const int arrowWidth = int(dpiScaled(14, dpi));
+    const int arrowHeight = int(dpiScaled(8, dpi));
+
+    const int arrowMax = qMin(arrowHeight, arrowWidth);
+    const int rectMax = qMin(rect.height(), rect.width());
+    const int size = qMin(arrowMax, rectMax);
+
+    QPixmap cachePixmap;
+    QString cacheKey = QString("calibre-tree-view-arrow-%1-%2-%3").arg((unsigned long)color.rgba()).arg((unsigned long)type).arg(size);
+    if (!QPixmapCache::find(cacheKey, &cachePixmap)) {
+        cachePixmap = styleCachePixmap(rect.size());
+        cachePixmap.fill(Qt::transparent);
+        QPainter cachePainter(&cachePixmap);
+
+        QRectF arrowRect;
+        arrowRect.setWidth(size);
+        arrowRect.setHeight(arrowHeight * size / arrowWidth);
+        if (type == Qt::LeftArrow || type == Qt::RightArrow)
+            arrowRect = arrowRect.transposed();
+        arrowRect.moveTo((rect.width() - arrowRect.width()) / 2.0,
+                         (rect.height() - arrowRect.height()) / 2.0);
+
+        QPolygonF triangle;
+        triangle.reserve(3);
+        switch (type) {
+        case Qt::DownArrow:
+            triangle << arrowRect.topLeft() << arrowRect.topRight() << QPointF(arrowRect.center().x(), arrowRect.bottom());
+            break;
+        case Qt::RightArrow:
+            triangle << arrowRect.topLeft() << arrowRect.bottomLeft() << QPointF(arrowRect.right(), arrowRect.center().y());
+            break;
+        case Qt::LeftArrow:
+            triangle << arrowRect.topRight() << arrowRect.bottomRight() << QPointF(arrowRect.left(), arrowRect.center().y());
+            break;
+        default:
+            triangle << arrowRect.bottomLeft() << arrowRect.bottomRight() << QPointF(arrowRect.center().x(), arrowRect.top());
+            break;
+        }
+
+        cachePainter.setPen(Qt::NoPen);
+        cachePainter.setBrush(color);
+        cachePainter.setRenderHint(QPainter::Antialiasing);
+        cachePainter.drawPolygon(triangle);
+
+        QPixmapCache::insert(cacheKey, cachePixmap);
+    }
+
+    painter->drawPixmap(rect, cachePixmap);
+}
+
 
 CalibreStyle::CalibreStyle(int transient_scroller) : QProxyStyle(QString::fromUtf8("Fusion")), transient_scroller(transient_scroller) {
     setObjectName(QString("calibre"));
@@ -90,6 +167,10 @@ int CalibreStyle::styleHint(StyleHint hint, const QStyleOption *option, const QW
         case SH_UnderlineShortcut:
             return 0;
 #endif
+        case SH_EtchDisabledText:
+            return 0;
+        case SH_DitherDisabledText:
+            return 0;
         default:
             break;
     }
@@ -127,6 +208,78 @@ void CalibreStyle::drawComplexControl(ComplexControl control, const QStyleOption
                 return QProxyStyle::drawComplexControl(control, &opt, painter, widget);
             }
             break; /// }}}
+
+        case CC_ScrollBar: { // {{{
+            if (transient_scroller) break;
+            const QStyleOptionSlider *scroll_bar = qstyleoption_cast<const QStyleOptionSlider *>(option);
+            if (scroll_bar && is_color_dark(option->palette.color(QPalette::Window))) {
+                bool horizontal = scroll_bar->orientation == Qt::Horizontal;
+
+                QColor outline = option->palette.window().color().darker(140);
+                QColor alphaOutline = outline;
+                alphaOutline.setAlpha(180);
+
+                QRect scrollBarSubLine = subControlRect(control, scroll_bar, SC_ScrollBarSubLine, widget);
+                QRect scrollBarAddLine = subControlRect(control, scroll_bar, SC_ScrollBarAddLine, widget);
+                QRect scrollBarSlider = subControlRect(control, scroll_bar, SC_ScrollBarSlider, widget);
+                QRect scrollBarGroove = subControlRect(control, scroll_bar, SC_ScrollBarGroove, widget);
+
+                QRect rect = option->rect;
+
+                { // Paint groove
+                QLinearGradient gradient(rect.center().x(), rect.top(), rect.center().x(), rect.bottom());
+                if (!horizontal) gradient = QLinearGradient(rect.left(), rect.center().y(), rect.right(), rect.center().y());
+                QColor buttonColor = option->palette.color(QPalette::Button);
+                gradient.setColorAt(0, buttonColor.darker(107));
+                gradient.setColorAt(0.1, buttonColor.darker(105));
+                gradient.setColorAt(0.9, buttonColor.darker(105));
+                gradient.setColorAt(1, buttonColor.darker(107));
+                painter->save();
+                painter->setPen(Qt::NoPen);
+                painter->fillRect(rect, gradient);
+                if (horizontal) painter->drawLine(rect.topLeft(), rect.topRight());
+                else painter->drawLine(rect.topLeft(), rect.bottomLeft());
+                QColor subtleEdge = alphaOutline;
+                subtleEdge.setAlpha(40);
+                painter->setPen(subtleEdge);
+                painter->setBrush(Qt::NoBrush);
+                painter->drawRect(scrollBarGroove.adjusted(1, 0, -1, -1));
+                painter->restore();
+                }
+
+                { // Paint slider
+                QLinearGradient gradient(scrollBarSlider.center().x(), scrollBarSlider.top(), scrollBarSlider.center().x(), scrollBarSlider.bottom());
+                if (!horizontal) gradient = QLinearGradient(scrollBarSlider.left(), scrollBarSlider.center().y(), scrollBarSlider.right(), scrollBarSlider.center().y());
+                QColor m = option->palette.window().color().lighter(130);
+                if (option->state & State_MouseOver) {
+                    gradient.setColorAt(0, m.lighter()); gradient.setColorAt(1, m.lighter(175));
+                } else {
+                    gradient.setColorAt(0, m); gradient.setColorAt(1, m.lighter());
+                }
+                painter->save();
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                painter->setBrush(gradient); painter->setPen(alphaOutline);
+                painter->drawRoundedRect(QRectF(scrollBarSlider.adjusted(horizontal ? -1 : 0, horizontal ? 0 : -1, horizontal ? 0 : -1, horizontal ? -1 : 0)), 5., 5.);
+                painter->restore();
+                }
+
+                { // Paint arrows
+                QRect upRect = scrollBarSubLine.adjusted(horizontal ? 0 : 1, horizontal ? 1 : 0, horizontal ? -2 : -1, horizontal ? -1 : -2);
+                Qt::ArrowType arrowType = Qt::UpArrow;
+                if (horizontal) arrowType = option->direction == Qt::LeftToRight ? Qt::LeftArrow : Qt::RightArrow;
+                QColor arrowColor = option->palette.windowText().color();
+                draw_arrow(arrowType, painter, option, upRect, arrowColor);
+
+                QRect downRect = scrollBarAddLine.adjusted(1, 1, -1, -1);
+                arrowType = Qt::DownArrow;
+                if (horizontal) arrowType = option->direction == Qt::LeftToRight ? Qt::RightArrow : Qt::LeftArrow;
+                draw_arrow(arrowType, painter, option, downRect, arrowColor);
+
+                }
+
+                return;
+            }} break; // }}}
+
         default:
             break;
     }
@@ -203,7 +356,7 @@ void CalibreStyle::drawPrimitive(PrimitiveElement element, const QStyleOption * 
                 QColor color = vopt->palette.color(QPalette::Normal, QPalette::Highlight);
                 QStyleOptionViewItem opt = QStyleOptionViewItem(*vopt);
                 if (is_color_dark(option->palette.color(QPalette::Window))) {
-                    color = color.lighter(190);
+                    color = color.lighter(180);
                 } else {
                     color = color.lighter(125);
                 }
@@ -212,6 +365,14 @@ void CalibreStyle::drawPrimitive(PrimitiveElement element, const QStyleOption * 
             }
             break; // }}}
 
+        case PE_IndicatorBranch:  // {{{
+            if (option->state & State_MouseOver && option->state & State_Children && widget && widget->property("hovered_item_is_highlighted").toBool() && is_color_dark(option->palette.color(QPalette::Window))) {;
+                if (option->rect.width() <= 1 || option->rect.height() <= 1) return;
+                Qt::ArrowType arrow = Qt::ArrowType::DownArrow;
+                if (!(option->state & State_Open)) arrow = Qt::ArrowType::RightArrow;
+                draw_arrow(arrow, painter, option, option->rect, QColor(Qt::black));
+                return;
+            } break;  // }}}
         case PE_IndicatorToolBarSeparator:  // {{{
             // Make toolbar separators stand out a bit more in dark themes
             {

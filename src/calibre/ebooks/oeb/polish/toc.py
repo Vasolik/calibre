@@ -14,14 +14,14 @@ from lxml import etree
 from lxml.builder import ElementMaker
 
 from calibre import __version__
-from calibre.ebooks.oeb.base import (
-    XPath, uuid_id, xml2text, NCX, NCX_NS, XML, XHTML, XHTML_NS, serialize, EPUB_NS, XML_NS, OEB_DOCS)
+from calibre.ebooks.oeb.base import EPUB_NS, NCX, NCX_NS, OEB_DOCS, XHTML, XHTML_NS, XML, XML_NS, XPath, serialize, uuid_id, xml2text
 from calibre.ebooks.oeb.polish.errors import MalformedMarkup
-from calibre.ebooks.oeb.polish.utils import guess_type, extract
-from calibre.ebooks.oeb.polish.opf import set_guide_item, get_book_language
+from calibre.ebooks.oeb.polish.opf import get_book_language, set_guide_item
 from calibre.ebooks.oeb.polish.pretty import pretty_html_tree, pretty_xml_tree
+from calibre.ebooks.oeb.polish.utils import extract, guess_type
 from calibre.translations.dynamic import translate
-from calibre.utils.localization import get_lang, canonicalize_lang, lang_as_iso639_1
+from calibre.utils.localization import canonicalize_lang, get_lang, lang_as_iso639_1
+from calibre.utils.resources import get_path as P
 from polyglot.builtins import iteritems
 from polyglot.urllib import urlparse
 
@@ -219,18 +219,33 @@ def parse_nav(container, nav_name):
     root = container.parsed(nav_name)
     toc_root = TOC()
     toc_root.lang = toc_root.uid = None
+    seen_toc = seen_pagelist = False
     et = '{%s}type' % EPUB_NS
-    for nav in root.iterdescendants(XHTML('nav')):
-        if nav.get(et) == 'toc':
+    for nav in XPath('descendant::h:nav[@epub:type]')(root):
+        nt = nav.get(et)
+        if nt == 'toc' and not seen_toc:
             ol = first_child(nav, XHTML('ol'))
             if ol is not None:
+                seen_toc = True
                 process_nav_node(container, ol, toc_root, nav_name)
                 for h in nav.iterchildren(*map(XHTML, 'h1 h2 h3 h4 h5 h6'.split())):
                     text = etree.tostring(h, method='text', encoding='unicode', with_tail=False) or h.get('title')
                     if text:
                         toc_root.toc_title = text
                         break
-                break
+        elif nt == 'page-list' and not seen_pagelist:
+            ol = first_child(nav, XHTML('ol'))
+            if ol is not None and not seen_pagelist:
+                seen_pagelist = True
+                for li in ol.iterchildren(XHTML('li')):
+                    for a in li.iterchildren(XHTML('a')):
+                        href = a.get('href')
+                        if href:
+                            text = (etree.tostring(a, method='text', encoding='unicode', with_tail=False) or a.get('title')).strip()
+                            if text:
+                                dest = nav_name if href.startswith('#') else container.href_to_name(href, base=nav_name)
+                                frag = urlparse(href).fragment or None
+                                toc_root.page_list.append({'dest': dest, 'pagenum': text, 'frag': frag})
     return toc_root
 
 

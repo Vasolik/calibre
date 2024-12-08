@@ -2,8 +2,9 @@
 # License: GPL v3 Copyright: 2021, Kovid Goyal <kovid at kovidgoyal.net>
 
 from contextlib import suppress
-from css_parser.css import CSSRule
 from typing import List, NamedTuple, Optional, Tuple
+
+from css_parser.css import CSSRule
 
 from calibre.ebooks.oeb.parse_utils import barename
 from calibre.ebooks.oeb.polish.container import get_container
@@ -115,7 +116,7 @@ def find_first_matching_rule(
             )
             if res is not None:
                 return res._replace(style_tag_address=(int(tag.get(lnum_attr)), ['style']))
-        elif tn == 'link' and tag.get('href') and tag.get('rel') == 'stylesheet':
+        elif tn == 'link' and tag.get('href') and tag.get('rel', '').lower() == 'stylesheet':
             sname = container.href_to_name(tag.get('href'), html_file_name)
             try:
                 sheet = container.parsed(sname)

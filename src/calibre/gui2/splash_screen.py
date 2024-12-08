@@ -2,13 +2,11 @@
 # License: GPLv3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 
-from qt.core import (
-    QApplication, QBrush, QColor, QFont, QFontMetrics, QPen, QPixmap, QSplashScreen,
-    Qt, QPainter
-)
+from qt.core import QApplication, QBrush, QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap, QSplashScreen, Qt
 
 from calibre.constants import __appname__, numeric_version
 from calibre.utils.monotonic import monotonic
+from calibre.utils.resources import get_image_path as I
 
 
 class SplashScreen(QSplashScreen):

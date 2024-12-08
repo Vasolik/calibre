@@ -8,13 +8,18 @@ from calibre.devices.kindle.apnx import APNXBuilder
 Device driver for Amazon's Kindle
 '''
 
-import datetime, os, re, json, hashlib, errno
+import errno
+import hashlib
+import json
+import os
+import re
 
+from calibre import fsync, prints, strftime
 from calibre.constants import DEBUG, filesystem_encoding
 from calibre.devices.interface import OpenPopupMessage
 from calibre.devices.kindle.bookmark import Bookmark
 from calibre.devices.usbms.driver import USBMS
-from calibre import strftime, fsync, prints
+from calibre.utils.date import utcfromtimestamp
 from polyglot.builtins import as_bytes, as_unicode
 
 '''
@@ -38,6 +43,26 @@ Adding a book to a collection on the Kindle does not change the book file at all
 (i.e. it is binary identical). Therefore collection information is not stored in
 file metadata.
 '''
+
+
+def thumbnail_filename(stream) -> str:
+    from calibre.ebooks.metadata.kfx import CONTAINER_MAGIC, read_book_key_kfx
+    from calibre.ebooks.mobi.reader.headers import MetadataHeader
+    from calibre.utils.logging import default_log
+    stream.seek(0)
+    is_kfx = stream.read(4) == CONTAINER_MAGIC
+    stream.seek(0)
+    uuid = cdetype = None
+    if is_kfx:
+        uuid, cdetype = read_book_key_kfx(stream)
+    else:
+        mh = MetadataHeader(stream, default_log)
+        if mh.exth is not None:
+            uuid = mh.exth.uuid
+            cdetype = mh.exth.cdetype
+    if not uuid or not cdetype:
+        return ''
+    return f'thumbnail_{uuid}_{cdetype}_portrait.jpg'
 
 
 def get_files_in(path):
@@ -121,13 +146,13 @@ class KINDLE(USBMS):
             from calibre.ebooks.metadata.kfx import read_metadata_kfx
             try:
                 kfx_path = path
-                with lopen(kfx_path, 'rb') as f:
+                with open(kfx_path, 'rb') as f:
                     if f.read(8) != b'\xeaDRMION\xee':
                         f.seek(0)
                         mi = read_metadata_kfx(f)
                     else:
                         kfx_path = os.path.join(path.rpartition('.')[0] + '.sdr', 'assets', 'metadata.kfx')
-                        with lopen(kfx_path, 'rb') as mf:
+                        with open(kfx_path, 'rb') as mf:
                             mi = read_metadata_kfx(mf)
             except Exception:
                 import traceback
@@ -218,9 +243,9 @@ class KINDLE(USBMS):
 
         mc_path = get_my_clippings(storage, bookmarked_books)
         if mc_path:
-            timestamp = datetime.datetime.utcfromtimestamp(os.path.getmtime(mc_path))
+            timestamp = utcfromtimestamp(os.path.getmtime(mc_path))
             bookmarked_books['clippings'] = self.UserAnnotation(type='kindle_clippings',
-                                              value=dict(path=mc_path,timestamp=timestamp))
+                                              value=dict(path=mc_path, timestamp=timestamp))
 
         # This returns as job.result in gui2.ui.annotations_fetched(self,job)
         return bookmarked_books
@@ -229,7 +254,7 @@ class KINDLE(USBMS):
         from calibre.ebooks.BeautifulSoup import BeautifulSoup
         # Returns <div class="user_annotations"> ... </div>
         last_read_location = bookmark.last_read_location
-        timestamp = datetime.datetime.utcfromtimestamp(bookmark.timestamp)
+        timestamp = utcfromtimestamp(bookmark.timestamp)
         percent_read = bookmark.percent_read
 
         ka_soup = BeautifulSoup()
@@ -291,8 +316,8 @@ class KINDLE(USBMS):
         return ka_soup
 
     def add_annotation_to_library(self, db, db_id, annotation):
-        from calibre.ebooks.metadata import MetaInformation
         from calibre.ebooks.BeautifulSoup import prettify
+        from calibre.ebooks.metadata import MetaInformation
 
         bm = annotation
         ignore_tags = {'Catalog', 'Clippings'}
@@ -443,7 +468,7 @@ class KINDLE2(KINDLE):
         return bl
 
     def kindle_update_booklist(self, bl, collections):
-        with lopen(collections, 'rb') as f:
+        with open(collections, 'rb') as f:
             collections = f.read()
         collections = json.loads(collections)
         path_map = {}
@@ -497,28 +522,12 @@ class KINDLE2(KINDLE):
         return os.path.join(self._main_prefix, 'system', 'thumbnails')
 
     def thumbpath_from_filepath(self, filepath):
-        from calibre.ebooks.metadata.kfx import (CONTAINER_MAGIC, read_book_key_kfx)
-        from calibre.ebooks.mobi.reader.headers import MetadataHeader
-        from calibre.utils.logging import default_log
         thumb_dir = self.amazon_system_thumbnails_dir()
-        if not os.path.exists(thumb_dir):
-            return
-        with lopen(filepath, 'rb') as f:
-            is_kfx = f.read(4) == CONTAINER_MAGIC
-            f.seek(0)
-            uuid = cdetype = None
-            if is_kfx:
-                uuid, cdetype = read_book_key_kfx(f)
-            else:
-                mh = MetadataHeader(f, default_log)
-                if mh.exth is not None:
-                    uuid = mh.exth.uuid
-                    cdetype = mh.exth.cdetype
-        if not uuid or not cdetype:
-            return
-        return os.path.join(thumb_dir,
-                'thumbnail_{uuid}_{cdetype}_portrait.jpg'.format(
-                    uuid=uuid, cdetype=cdetype))
+        if os.path.exists(thumb_dir):
+            with open(filepath, 'rb') as f:
+                tfname = thumbnail_filename(f)
+            if tfname:
+                return os.path.join(thumb_dir, tfname)
 
     def amazon_cover_bug_cache_dir(self):
         # see https://www.mobileread.com/forums/showthread.php?t=329945
@@ -531,7 +540,7 @@ class KINDLE2(KINDLE):
 
         tp = self.thumbpath_from_filepath(filepath)
         if tp:
-            with lopen(tp, 'wb') as f:
+            with open(tp, 'wb') as f:
                 f.write(coverdata[2])
                 fsync(f)
             cache_dir = self.amazon_cover_bug_cache_dir()
@@ -539,7 +548,7 @@ class KINDLE2(KINDLE):
                 os.mkdir(cache_dir)
             except OSError:
                 pass
-            with lopen(os.path.join(cache_dir, os.path.basename(tp)), 'wb') as f:
+            with open(os.path.join(cache_dir, os.path.basename(tp)), 'wb') as f:
                 f.write(coverdata[2])
                 fsync(f)
 
@@ -566,7 +575,7 @@ class KINDLE2(KINDLE):
                 count += 1
                 if DEBUG:
                     prints('Restoring cover thumbnail:', name)
-                with lopen(os.path.join(src_dir, name), 'rb') as src, lopen(dest_path, 'wb') as dest:
+                with open(os.path.join(src_dir, name), 'rb') as src, open(dest_path, 'wb') as dest:
                     shutil.copyfileobj(src, dest)
                     fsync(dest)
         if DEBUG:

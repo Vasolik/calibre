@@ -4,7 +4,6 @@
 
 import glob
 import io
-import json
 import os
 import shlex
 import subprocess
@@ -54,17 +53,25 @@ else:
         setenv('PATH', '$SW/bin:$PATH')
         setenv('CFLAGS', '-I$SW/include')
         setenv('LDFLAGS', '-L$SW/lib')
-        setenv('LD_LIBRARY_PATH', '$SW/qt/lib:$SW/lib')
+        setenv('LD_LIBRARY_PATH', '$SW/qt/lib:$SW/ffmpeg/lib:$SW/lib')
         setenv('PKG_CONFIG_PATH', '$SW/lib/pkgconfig')
         setenv('QMAKE', '$SW/qt/bin/qmake')
         setenv('CALIBRE_QT_PREFIX', '$SW/qt')
 
 
-def run(*args):
+def run(*args, timeout=600):
     if len(args) == 1:
         args = shlex.split(args[0])
     print(' '.join(args), flush=True)
-    ret = subprocess.Popen(args).wait()
+    p = subprocess.Popen(args)
+    try:
+        ret = p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as err:
+        ret = 1
+        print(err, file=sys.stderr, flush=True)
+        print('Timed out running:', ' '.join(args), flush=True, file=sys.stderr)
+        p.kill()
+
     if ret != 0:
         raise SystemExit(ret)
 
@@ -91,7 +98,7 @@ def download_and_decompress(url, dest, compression=None):
 def install_qt_source_code():
     dest = os.path.expanduser('~/qt-base')
     os.mkdir(dest)
-    download_and_decompress('https://download.calibre-ebook.com/qtbase-everywhere-src-6.2.2.tar.xz', dest, 'J')
+    download_and_decompress('https://download.calibre-ebook.com/qtbase-everywhere-src-6.4.2.tar.xz', dest, 'J')
     qdir = glob.glob(dest + '/*')[0]
     os.environ['QT_SRC'] = qdir
 
@@ -107,19 +114,12 @@ def run_python(*args):
 def install_linux_deps():
     run('sudo', 'apt-get', 'update', '-y')
     # run('sudo', 'apt-get', 'upgrade', '-y')
-    run('sudo', 'apt-get', 'install', '-y', 'gettext', 'libgl1-mesa-dev', 'libxkbcommon-dev', 'libxkbcommon-x11-dev')
-
-
-def get_tx_tarball_url():
-    data = json.load(urlopen(
-        'https://api.github.com/repos/transifex/cli/releases/latest'))
-    for asset in data['assets']:
-        if asset['name'] == 'tx-linux-amd64.tar.gz':
-            return asset['browser_download_url']
+    run('sudo', 'apt-get', 'install', '-y',
+        'gettext', 'libgl1-mesa-dev', 'libxkbcommon-dev', 'libxkbcommon-x11-dev', 'pulseaudio', 'libasound2', 'libflite1', 'libspeechd2')
 
 
 def get_tx():
-    url = get_tx_tarball_url()
+    url = 'https://github.com/transifex/cli/releases/latest/download/tx-linux-amd64.tar.gz'
     print('Downloading:', url)
     with urlopen(url) as f:
         raw = f.read()
@@ -139,7 +139,7 @@ def main():
 
         tball = 'macos-64' if ismacos else 'linux-64'
         download_and_decompress(
-            f'https://download.calibre-ebook.com/ci/calibre6/{tball}.tar.xz', SW
+            f'https://download.calibre-ebook.com/ci/calibre7/{tball}.tar.xz', SW
         )
         if not ismacos:
             install_linux_deps()
@@ -164,12 +164,17 @@ username = api
         install_env()
         get_tx()
         os.environ['TX'] = os.path.abspath('tx')
-        run(sys.executable, 'setup.py', 'pot')
+        run(sys.executable, 'setup.py', 'pot', timeout=30 * 60)
     elif action == 'test':
         os.environ['CI'] = 'true'
+        os.environ['OPENSSL_MODULES'] = os.path.join(SW, 'lib', 'ossl-modules')
+        os.environ['PIPER_TTS_DIR'] = os.path.join(SW, 'piper')
         if ismacos:
             os.environ['SSL_CERT_FILE'] = os.path.abspath(
                 'resources/mozilla-ca-certs.pem')
+            # needed to ensure correct libxml2 is loaded
+            os.environ['DYLD_INSERT_LIBRARIES'] = ':'.join(os.path.join(SW, 'lib', x) for x in 'libxml2.dylib libxslt.dylib libexslt.dylib'.split())
+            os.environ['OPENSSL_ENGINES'] = os.path.join(SW, 'lib', 'engines-3')
 
         install_env()
         run_python('setup.py test')

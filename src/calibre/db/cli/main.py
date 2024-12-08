@@ -119,7 +119,7 @@ def read_credentials(opts):
             from getpass import getpass
             pw = getpass(_('Enter the password: '))
         elif pw.startswith('<f:') and pw.endswith('>'):
-            with lopen(pw[3:-1], 'rb') as f:
+            with open(pw[3:-1], 'rb') as f:
                 pw = f.read().decode('utf-8').rstrip()
     return username, pw
 
@@ -173,7 +173,7 @@ class DBCtx:
 
     def path(self, path):
         if self.is_remote:
-            with lopen(path, 'rb') as f:
+            with open(path, 'rb') as f:
                 return path, f.read()
         return path
 
@@ -195,7 +195,8 @@ class DBCtx:
 
     def remote_run(self, name, m, *args):
         from mechanize import HTTPError, Request
-        from calibre.utils.serialize import msgpack_loads, msgpack_dumps
+
+        from calibre.utils.serialize import msgpack_dumps, msgpack_loads
         url = self.url + '/cdb/cmd/{}/{}'.format(name, getattr(m, 'version', 0))
         if self.library_id:
             url += '?' + urlencode({'library_id':self.library_id})

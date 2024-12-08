@@ -6,6 +6,7 @@ __copyright__ = '2009, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
 import errno
+import hashlib
 import os
 import re
 import shutil
@@ -13,7 +14,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import hashlib
 from contextlib import contextmanager
 from functools import lru_cache
 
@@ -25,6 +25,7 @@ isdragonflybsd = 'dragonfly' in sys.platform
 isbsd = isnetbsd or isfreebsd or isdragonflybsd
 ishaiku = 'haiku1' in sys.platform
 islinux = not ismacos and not iswindows and not isbsd and not ishaiku
+is_ci = os.environ.get('CI', '').lower() == 'true'
 sys.setup_dir = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.abspath(os.path.join(os.path.dirname(sys.setup_dir), 'src'))
 sys.path.insert(0, SRC)
@@ -46,8 +47,12 @@ def newer(targets, sources):
         if not os.path.exists(f):
             return True
     ttimes = map(lambda x: os.stat(x).st_mtime, targets)
-    stimes = map(lambda x: os.stat(x).st_mtime, sources)
-    newest_source, oldest_target = max(stimes), min(ttimes)
+    oldest_target = min(ttimes)
+    try:
+        stimes = map(lambda x: os.stat(x).st_mtime, sources)
+        newest_source = max(stimes)
+    except FileNotFoundError:
+        newest_source = oldest_target +1
     return newest_source > oldest_target
 
 
@@ -69,7 +74,7 @@ def download_securely(url):
     # We use curl here as on some OSes (OS X) when bootstrapping calibre,
     # python will be unable to validate certificates until after cacerts is
     # installed
-    if os.environ.get('CI') and iswindows:
+    if is_ci and iswindows:
         # curl is failing for wikipedia urls on CI (used for browser_data)
         from urllib.request import urlopen
         return urlopen(url).read()
@@ -162,7 +167,7 @@ def get_warnings():
 
 def edit_file(path):
     return subprocess.Popen([
-        'vim', '-c', 'ALELint', '-c', 'ALEFirst', '-S', os.path.join(SRC, '../session.vim'), '-f', path
+        os.environ.get('EDITOR', 'vim'), '-S', os.path.join(SRC, '../session.vim'), '-f', path
     ]).wait() == 0
 
 
@@ -211,7 +216,7 @@ class Command:
 
     def running(self, cmd):
         from setup.commands import command_names
-        if os.environ.get('CI'):
+        if is_ci:
             self.info('::group::' + command_names[cmd])
         self.info('\n*')
         self.info('* Running', command_names[cmd])
@@ -227,7 +232,7 @@ class Command:
         self.running(cmd)
         cmd.run(opts)
         self.info(f'* {command_names[cmd]} took {time.time() - st:.1f} seconds')
-        if os.environ.get('CI'):
+        if is_ci:
             self.info('::endgroup::')
 
     def run_all(self, opts):

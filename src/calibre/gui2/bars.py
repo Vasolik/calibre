@@ -6,16 +6,35 @@ __copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
 from functools import partial
+
 from qt.core import (
-    Qt, QAction, QMenu, QObject, QToolBar, QToolButton, QSize, pyqtSignal, QKeySequence, QMenuBar,
-    QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, QPainter, QWidget, QPalette, sip,
-    QHBoxLayout, QFrame)
+    QAction,
+    QEasingCurve,
+    QFrame,
+    QHBoxLayout,
+    QKeySequence,
+    QMenu,
+    QMenuBar,
+    QObject,
+    QPainter,
+    QPalette,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    QToolBar,
+    QToolButton,
+    QWidget,
+    pyqtProperty,
+    pyqtSignal,
+    sip,
+)
 
 from calibre.constants import ismacos
-from calibre.gui2 import gprefs, native_menubar_defaults, config
+from calibre.gui2 import config, gprefs, native_menubar_defaults
 from calibre.gui2.throbber import ThrobbingButton
-from polyglot.builtins import itervalues
 from calibre.gui2.widgets2 import RightClickButton
+from polyglot.builtins import itervalues
 
 
 class RevealBar(QWidget):  # {{{
@@ -85,7 +104,13 @@ def wrap_button_text(text, max_len=MAX_TEXT_LENGTH):
                     broken = True
                 else:
                     ans = word
-    if not broken:
+    if broken:
+        prefix, suffix = ans.split('\n', 1)
+        if len(suffix) > len(prefix) and len(suffix) > MAX_TEXT_LENGTH and len(prefix) < MAX_TEXT_LENGTH and suffix.count(' ') > 1:
+            word, rest = suffix.split(' ', 1)
+            if len(word) + len(prefix) <= len(rest):
+                ans = prefix + ' ' + word + '\n' + rest
+    else:
         if ' ' in ans:
             ans = '\n'.join(ans.split(' ', 1))
         elif '/' in ans:
@@ -795,7 +820,7 @@ class BarsManager(QObject):
 
     def apply_settings(self):
         sz = gprefs['toolbar_icon_size']
-        sz = {'off':0, 'small':24, 'medium':48, 'large':64}[sz]
+        sz = {'off':0, 'small':24, 'mid-small':30, 'medium':48, 'large':64}[sz]
         style = Qt.ToolButtonStyle.ToolButtonTextUnderIcon
         if sz > 0 and gprefs['toolbar_text'] == 'never':
             style = Qt.ToolButtonStyle.ToolButtonIconOnly

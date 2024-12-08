@@ -4,15 +4,8 @@ import re
 
 import html5lib
 import mechanize
+from calibre.web.feeds.news import BasicNewsRecipe, classes
 from lxml import html
-
-from calibre.web.feeds.news import BasicNewsRecipe
-
-
-def classes(classes):
-    q = frozenset(classes.split(' '))
-    return dict(attrs={
-        'class': lambda x: x and frozenset(x.split()).intersection(q)})
 
 
 def as_article(source, log):
@@ -134,6 +127,13 @@ class ForeignAffairsRecipe(BasicNewsRecipe):
 
     INDEX = 'https://www.foreignaffairs.com/magazine'
 
+    recipe_specific_options = {
+        'issue': {
+            'short': 'Enter the Issue Number you want to download ',
+            'long': 'For example, 2024/103/1'
+        }
+    }
+
     keep_only_tags = [
         classes('article-header article-body article-lead-image article-body-text'),
     ]
@@ -147,6 +147,10 @@ class ForeignAffairsRecipe(BasicNewsRecipe):
     remove_empty_feeds = True
 
     def parse_index(self):
+        d = self.recipe_specific_options.get('issue')
+        if d and isinstance(d, str):
+            self.INDEX = 'https://www.foreignaffairs.com/issues/' + d
+
         soup = self.index_to_soup(self.INDEX)
         # get dates
         date = re.split(r'\s\|\s', self.tag_to_string(
@@ -155,9 +159,14 @@ class ForeignAffairsRecipe(BasicNewsRecipe):
         self.timefmt = u' [%s]' % date
         link = soup.find('link', rel='canonical', href=True)['href']
         year, volnum, issue_vol = link.split('/')[-3:]
-        self.cover_url = soup.find(**classes('subscribe-callout-image'))['data-src'].split("|")[-1]
-        self.cover_url = self.cover_url.split('?')[0]
-        self.cover_url = self.cover_url.replace('_webp_issue_small_2x', '_webp_issue_large_2x')
+        self.cover_url = re.sub(
+            r"_webp_issue_small_\dx",
+            "_webp_issue_large_2x",
+            soup.find(class_="subscribe-callout-image")["srcset"]
+            .split(",")[0]
+            .strip()
+            .split(" ")[0],
+        )
 
         cls = soup.find('body')['class']
         if isinstance(cls, (list, tuple)):
@@ -181,9 +190,8 @@ class ForeignAffairsRecipe(BasicNewsRecipe):
         return html.tostring(root, encoding='unicode')
 
     def preprocess_html(self, soup):
-        for attr in ('ng-src', 'data-blazy', 'data-src'):
-            for img in soup.findAll('img', attrs={attr: True}):
-                img['src'] = img[attr]
+        for img in soup.find_all('img', attrs={'srcset': True}):
+            img['src'] = img['srcset'].split(',')[-1].strip().split(' ')[0].strip()
         return soup
 
     def get_browser(self):

@@ -5,41 +5,56 @@
 import importlib
 import os
 import re
-import regex
 import textwrap
 import unicodedata
+from contextlib import suppress
+
+import regex
 from qt.core import (
-    QColor, QColorDialog, QFont, QFontDatabase, QKeySequence, QPainter, QPalette,
-    QPlainTextEdit, QRect, QSize, Qt, QTextCursor, QTextEdit, QTextFormat, QTimer,
-    QToolTip, QWidget, pyqtSignal
+    QColor,
+    QColorDialog,
+    QFont,
+    QFontDatabase,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPlainTextEdit,
+    QRect,
+    QSize,
+    Qt,
+    QTextCursor,
+    QTextEdit,
+    QTextFormat,
+    QTimer,
+    QToolTip,
+    QWidget,
+    pyqtSignal,
 )
 
 from calibre import prepare_string_for_xml
 from calibre.ebooks.oeb.base import OEB_DOCS, OEB_STYLES, css_text
 from calibre.ebooks.oeb.polish.replace import get_recommended_folders
 from calibre.ebooks.oeb.polish.utils import guess_type
-from calibre.gui2.tweak_book import (
-    CONTAINER_DND_MIMETYPE, TOP, current_container, tprefs
-)
+from calibre.gui2.tweak_book import CONTAINER_DND_MIMETYPE, TOP, current_container, tprefs
 from calibre.gui2.tweak_book.completion.popup import CompletionPopup
-from calibre.gui2.tweak_book.editor import (
-    CLASS_ATTRIBUTE_PROPERTY, LINK_PROPERTY, SPELL_LOCALE_PROPERTY, SPELL_PROPERTY,
-    SYNTAX_PROPERTY, store_locale
-)
+from calibre.gui2.tweak_book.editor import CLASS_ATTRIBUTE_PROPERTY, LINK_PROPERTY, SPELL_LOCALE_PROPERTY, SPELL_PROPERTY, SYNTAX_PROPERTY, store_locale
 from calibre.gui2.tweak_book.editor.smarts import NullSmarts
 from calibre.gui2.tweak_book.editor.snippets import SnippetManager
 from calibre.gui2.tweak_book.editor.syntax.base import SyntaxHighlighter
-from calibre.gui2.tweak_book.editor.themes import (
-    get_theme, theme_color, theme_format
-)
+from calibre.gui2.tweak_book.editor.themes import get_theme, theme_color, theme_format
 from calibre.gui2.tweak_book.widgets import PARAGRAPH_SEPARATOR, PlainTextEdit
 from calibre.spell.break_iterator import index_of
-from calibre.utils.icu import (
-    capitalize, lower, safe_chr, string_length, swapcase, upper
-)
+from calibre.utils.icu import capitalize, lower, safe_chr, string_length, swapcase, upper, utf16_length
 from calibre.utils.img import image_to_data
 from calibre.utils.titlecase import titlecase
 from polyglot.builtins import as_unicode
+
+
+def adjust_for_non_bmp_chars(raw: str, start: int, end: int) -> tuple[int, int]:
+    adjusted_start = utf16_length(raw[:start])
+    end = adjusted_start + utf16_length(raw[start:end])
+    start = adjusted_start
+    return start, end
 
 
 def get_highlighter(syntax):
@@ -180,7 +195,7 @@ class TextEdit(PlainTextEdit):
                     name = path
                 else:
                     name = get_name(os.path.basename(path))
-                    with lopen(path, 'rb') as f:
+                    with open(path, 'rb') as f:
                         name = add_file(name, f.read(), mt)
                 href = get_href(name)
                 if mt.startswith('image/'):
@@ -218,10 +233,15 @@ class TextEdit(PlainTextEdit):
     def sizeHint(self):
         return self.size_hint
 
+    def apply_line_wrap_mode(self, yes: bool = True) -> None:
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth if yes else QPlainTextEdit.LineWrapMode.NoWrap)
+
     def apply_settings(self, prefs=None, dictionaries_changed=False):  # {{{
         prefs = prefs or tprefs
         self.setAcceptDrops(prefs.get('editor_accepts_drops', True))
-        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth if prefs['editor_line_wrap'] else QPlainTextEdit.LineWrapMode.NoWrap)
+        self.apply_line_wrap_mode(prefs['editor_line_wrap'])
+        with suppress(Exception):
+            self.setCursorWidth(int(prefs.get('editor_cursor_width', 1)))
         theme = get_theme(prefs['editor_theme'])
         self.apply_theme(theme)
         fm = self.fontMetrics()
@@ -240,6 +260,9 @@ class TextEdit(PlainTextEdit):
         pal.setColor(QPalette.ColorRole.Highlight, theme_color(theme, 'Visual', 'bg'))
         pal.setColor(QPalette.ColorRole.HighlightedText, theme_color(theme, 'Visual', 'fg'))
         self.setPalette(pal)
+        vpal = self.viewport().palette()
+        vpal.setColor(QPalette.ColorRole.Base, pal.color(QPalette.ColorRole.Base))
+        self.viewport().setPalette(vpal)
         self.tooltip_palette = pal = QPalette()
         pal.setColor(QPalette.ColorRole.ToolTipBase, theme_color(theme, 'Tooltip', 'bg'))
         pal.setColor(QPalette.ColorRole.ToolTipText, theme_color(theme, 'Tooltip', 'fg'))
@@ -331,7 +354,7 @@ class TextEdit(PlainTextEdit):
     def update_extra_selections(self, instant=True):
         sel = []
         if self.current_cursor_line is not None:
-            sel.append(self.current_cursor_line)
+            sel.extend(self.current_cursor_line)
         if self.current_search_mark is not None:
             sel.append(self.current_search_mark)
         if instant and not self.highlighter.has_requests and self.smarts is not None:
@@ -379,6 +402,7 @@ class TextEdit(PlainTextEdit):
         start, end = m.span()
         if start == end:
             return False
+        start, end = adjust_for_non_bmp_chars(raw, start, end)
         if wrap:
             if reverse:
                 textpos = c.anchor()
@@ -470,6 +494,7 @@ class TextEdit(PlainTextEdit):
         start, end = m.span()
         if start == end:
             return False
+        start, end = adjust_for_non_bmp_chars(raw, start, end)
         if wrap and not complete:
             if reverse:
                 textpos = c.anchor()
@@ -515,6 +540,7 @@ class TextEdit(PlainTextEdit):
             start, end = m.span()
             if start == end:
                 return False
+            start, end = adjust_for_non_bmp_chars(raw, start, end)
         if reverse:
             start, end = end, start
         c.clearSelection()
@@ -620,12 +646,36 @@ class TextEdit(PlainTextEdit):
 
     # Line numbers and cursor line {{{
     def highlight_cursor_line(self):
+        self._highlight_cursor_line()
+
+    def _highlight_cursor_line(self, highlight_now=True):
+        if self.highlighter.is_working:
+            QTimer.singleShot(10, self.highlight_cursor_line)
+            if not highlight_now:
+                return
         sel = QTextEdit.ExtraSelection()
         sel.format.setBackground(self.palette().alternateBase())
         sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
         sel.cursor = self.textCursor()
         sel.cursor.clearSelection()
-        self.current_cursor_line = sel
+        self.current_cursor_line = [sel]
+
+        # apply any formats that have a background over the cursor line format
+        # to ensure they are visible
+        c = self.textCursor()
+        block = c.block()
+        c.clearSelection()
+        c.select(QTextCursor.SelectionType.LineUnderCursor)
+        start = min(c.anchor(), c.position())
+        length = max(c.anchor(), c.position()) - start
+        for f in self.highlighter.formats_for_line(block, start, length):
+            sel = QTextEdit.ExtraSelection()
+            c = self.textCursor()
+            c.setPosition(f.start + block.position())
+            c.setPosition(c.position() + f.length, QTextCursor.MoveMode.KeepAnchor)
+            sel.cursor, sel.format = c, f.format
+            self.current_cursor_line.append(sel)
+
         self.update_extra_selections(instant=False)
         # Update the cursor line's line number in the line number area
         try:
@@ -865,25 +915,13 @@ class TextEdit(PlainTextEdit):
             'bold': ('<b>', '</b>'),
             'italic': ('<i>', '</i>'),
             'underline': ('<u>', '</u>'),
-            'strikethrough': ('<strike>', '</strike>'),
+            'strikethrough': ('<span style="text-decoration: line-through">', '</span>'),
             'superscript': ('<sup>', '</sup>'),
             'subscript': ('<sub>', '</sub>'),
             'color': ('<span style="color: %s">' % color, '</span>'),
             'background-color': ('<span style="background-color: %s">' % color, '</span>'),
         }[formatting]
-        left, right = self.get_range_inside_tag()
-        c = self.textCursor()
-        c.setPosition(left)
-        c.setPosition(right, QTextCursor.MoveMode.KeepAnchor)
-        prev_text = str(c.selectedText()).rstrip('\0')
-        c.insertText(prefix + prev_text + suffix)
-        if prev_text:
-            right = c.position()
-            c.setPosition(left)
-            c.setPosition(right, QTextCursor.MoveMode.KeepAnchor)
-        else:
-            c.setPosition(c.position() - len(suffix))
-        self.setTextCursor(c)
+        self.smarts.surround_with_custom_tag(self, prefix, suffix)
 
     def insert_image(self, href, fullpage=False, preserve_aspect_ratio=False, width=-1, height=-1):
         if width <= 0:

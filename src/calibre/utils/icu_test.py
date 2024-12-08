@@ -4,11 +4,12 @@
 __license__ = 'GPL v3'
 __copyright__ = '2014, Kovid Goyal <kovid at kovidgoyal.net>'
 
-import unittest, sys
+import sys
+import unittest
 from contextlib import contextmanager
 
 import calibre.utils.icu as icu
-from polyglot.builtins import iteritems, cmp
+from polyglot.builtins import cmp, iteritems
 
 
 @contextmanager
@@ -120,7 +121,8 @@ class TestICU(unittest.TestCase):
         self.ae((0, 5), icu.primary_no_punc_find('abcd', 'ab cd'))
         # test find all
         m = []
-        a = lambda p,l : m.append((p, l))
+        def a(p, l):
+            return m.append((p, l))
         icu.primary_collator_without_punctuation().find_all('a', 'a a🐱a', a)
         self.ae(m, [(0, 1), (2, 1), (5, 1)])
         # test find whole words
@@ -200,7 +202,8 @@ class TestICU(unittest.TestCase):
 
     def test_break_iterator(self):
         ' Test the break iterator '
-        from calibre.spell.break_iterator import split_into_words as split, index_of, split_into_words_and_positions, count_words
+        from calibre.spell.break_iterator import count_words, index_of, split_into_words_and_positions
+        from calibre.spell.break_iterator import split_into_words as split
         for q in ('one two three', ' one two three', 'one\ntwo  three ', ):
             self.ae(split(str(q)), ['one', 'two', 'three'], 'Failed to split: %r' % q)
         self.ae(split('I I\'m'), ['I', "I'm"])
@@ -252,6 +255,17 @@ class TestICU(unittest.TestCase):
                 '中文':'中文'
             }.items():
                 self.ae(expected, func(q))
+
+    def test_split_into_sentences(self):
+        from calibre.spell.break_iterator import split_into_sentences_for_tts
+        for sentence, expected in {
+            'hello.': [(0, 'hello.')],
+            'hello. I love you. Another small sentence. Fini.': [(0, 'hello. I love you. Another small sentence.'), (43, 'Fini.')],
+            'a very long sentence to be split into at least two smaller sentences': [
+                (0, 'a very long sentence to be split into at least two'), (51, 'smaller sentences')],
+            'hello\u2029i love you': [(0, 'hello'), (6, 'i love you')],
+        }.items():
+            self.ae(expected, list(split_into_sentences_for_tts(sentence, max_sentence_length=40)))
 
 
 def find_tests():

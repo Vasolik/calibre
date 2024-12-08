@@ -2,6 +2,7 @@
 # encoding: utf-8
 
 from __future__ import with_statement
+
 __license__ = 'GPL 3'
 __copyright__ = 'zotzo'
 __docformat__ = 'restructuredtext en'
@@ -32,6 +33,8 @@ class NYTimesSports(BasicNewsRecipe):
     use_embedded_content = False
     no_stylesheets = True
     language = 'en'
+    delay = 1
+
     feeds = [
         (u'The Fifth Down', u'https://fifthdown.blogs.nytimes.com/feed/'),
         (u'The Quad', u'https://thequad.blogs.nytimes.com/feed/'),

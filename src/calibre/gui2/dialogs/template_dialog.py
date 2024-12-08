@@ -5,30 +5,193 @@ __copyright__ = '2008, Kovid Goyal kovid@kovidgoyal.net'
 __docformat__ = 'restructuredtext en'
 __license__   = 'GPL v3'
 
-import json, os, traceback, re
-from functools import partial
+import json
+import os
+import re
 import sys
+import traceback
+from functools import partial
 
-from qt.core import (Qt, QDialog, QDialogButtonBox, QSyntaxHighlighter, QFont,
-                      QApplication, QTextCharFormat, QColor, QCursor,
-                      QIcon, QSize, QPalette, QLineEdit, QFontInfo,
-                      QFontDatabase, QVBoxLayout, QTableWidget, QTableWidgetItem,
-                      QComboBox, QAbstractItemView, QTextOption, QFontMetrics)
+from qt.core import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QCursor,
+    QDialog,
+    QDialogButtonBox,
+    QFont,
+    QFontDatabase,
+    QFontInfo,
+    QFontMetrics,
+    QHBoxLayout,
+    QIcon,
+    QLineEdit,
+    QPalette,
+    QSize,
+    QSyntaxHighlighter,
+    Qt,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextCharFormat,
+    QTextOption,
+    QTimer,
+    QToolButton,
+    QVBoxLayout,
+    pyqtSignal,
+)
 
 from calibre import sanitize_file_name
-from calibre.constants import config_dir
+from calibre.constants import config_dir, iswindows
 from calibre.ebooks.metadata.book.base import Metadata
 from calibre.ebooks.metadata.book.formatter import SafeFormat
-from calibre.gui2 import (gprefs, error_dialog, choose_files, choose_save_file,
-                          pixmap_to_data, question_dialog)
+from calibre.gui2 import choose_files, choose_save_file, error_dialog, gprefs, info_dialog, pixmap_to_data, question_dialog, safe_open_url
 from calibre.gui2.dialogs.template_dialog_ui import Ui_TemplateDialog
-from calibre.library.coloring import (displayable_columns, color_row_key)
+from calibre.gui2.dialogs.template_general_info import GeneralInformationDialog
+from calibre.gui2.widgets2 import Dialog, HTMLDisplay
+from calibre.library.coloring import color_row_key, displayable_columns
 from calibre.utils.config_base import tweaks
 from calibre.utils.date import DEFAULT_DATE
-from calibre.utils.formatter_functions import formatter_functions, StoredObjectType
-from calibre.utils.formatter import StopException, PythonTemplateContext
+from calibre.utils.ffml_processor import MARKUP_ERROR, FFMLProcessor
+from calibre.utils.formatter import PythonTemplateContext, StopException
+from calibre.utils.formatter_functions import StoredObjectType, formatter_functions
+from calibre.utils.icu import lower as icu_lower
 from calibre.utils.icu import sort_key
-from calibre.utils.localization import localize_user_manual_link
+from calibre.utils.localization import localize_user_manual_link, ngettext
+from calibre.utils.resources import get_path as P
+
+
+class DocViewer(Dialog):
+
+    def __init__(self, ffml, builtins, function_type_string_method, parent=None):
+        self.ffml = ffml
+        self.builtins = builtins
+        self.function_type_string = function_type_string_method
+        self.last_operation = None
+        self.last_function = None
+        self.back_stack = []
+        super().__init__(title=_('Template function documentation'), name='template_editor_doc_viewer_dialog',
+                         default_buttons=QDialogButtonBox.StandardButton.Close, parent=parent)
+
+    def sizeHint(self):
+        return QSize(800, 600)
+
+    def set_html(self, html):
+        self.doc_viewer_widget.setHtml(html)
+
+    def setup_ui(self):
+        l = QVBoxLayout(self)
+        e = self.doc_viewer_widget = HTMLDisplay(self)
+        if iswindows:
+            e.setDefaultStyleSheet('pre { font-family: "Segoe UI Mono", "Consolas", monospace; }')
+        e.anchor_clicked.connect(self.url_clicked)
+        l.addWidget(e)
+        bl = QHBoxLayout()
+        l.addLayout(bl)
+        self.english_cb = cb = QCheckBox(_('Show documentation as original &English'))
+        cb.setChecked(gprefs.get('template_editor_docs_in_english', False))
+        cb.stateChanged.connect(self.english_cb_state_changed)
+        bl.addWidget(cb)
+        bl.addWidget(self.bb)
+
+        b = self.back_button = self.bb.addButton(_('&Back'), QDialogButtonBox.ButtonRole.ActionRole)
+        b.clicked.connect(self.back)
+        b.setToolTip((_('Displays the previously viewed function')))
+        b.setEnabled(False)
+
+        b = self.bb.addButton(_('Show &all functions'), QDialogButtonBox.ButtonRole.ActionRole)
+        b.clicked.connect(self.show_all_functions_button_clicked)
+        b.setToolTip((_('Shows a list of all built-in functions in alphabetic order')))
+
+    def back(self):
+        if not self.back_stack:
+            info_dialog(self, _('Go back'), _('No function to go back to'), show=True)
+        else:
+            place = self.back_stack.pop()
+            self.back_button.setEnabled(bool(self.back_stack))
+            if isinstance(place, int):
+                self.show_all_functions()
+                # For reasons known only to Qt, I can't set the scroll bar position
+                # until some time has passed.
+                QTimer.singleShot(10, lambda: self.doc_viewer_widget.verticalScrollBar().setValue(place))
+            else:
+                self._show_function(place)
+
+    def add_to_back_stack(self):
+        if self.last_function is not None:
+            self.back_stack.append(self.last_function)
+        elif self.last_operation is not None:
+            self.back_stack.append(self.doc_viewer_widget.verticalScrollBar().value())
+        self.back_button.setEnabled(bool(self.back_stack))
+
+    def url_clicked(self, qurl):
+        if qurl.scheme().startswith('http'):
+            safe_open_url(qurl)
+        else:
+            self.show_function(qurl.path())
+
+    def english_cb_state_changed(self):
+        if self.last_operation is not None:
+            self.last_operation()
+        gprefs['template_editor_docs_in_english'] = self.english_cb.isChecked()
+
+    def header_line(self, name):
+        return f'\n<h3>{name} ({self.function_type_string(name, longform=False)})</h3>\n'
+
+    def get_doc(self, func):
+        doc = func.doc if hasattr(func, 'doc') else ''
+        return getattr(doc, 'formatted_english', doc) if self.english_cb.isChecked() else doc
+
+    def no_doc_string(self):
+        if self.english_cb.isChecked():
+            return 'No documentation provided'
+        return _('No documentation provided')
+
+    def show_function(self, fname):
+        if fname in self.builtins and fname != self.last_function:
+            self.add_to_back_stack()
+            self._show_function(fname)
+
+    def _show_function(self, fname):
+        self.last_operation = partial(self._show_function, fname)
+        bif = self.builtins[fname]
+        if fname not in self.builtins or not bif.doc:
+            self.set_html(self.header_line(fname) + self.no_doc_string())
+        else:
+            self.last_function = fname
+            self.set_html(self.header_line(fname) +
+                          self.ffml.document_to_html(self.get_doc(bif), fname))
+
+    def show_all_functions_button_clicked(self):
+        self.add_to_back_stack()
+        self.show_all_functions()
+
+    def show_all_functions(self):
+        self.last_function = None
+        self.last_operation = self.show_all_functions
+        result = []
+        a = result.append
+        for name in sorted(self.builtins, key=sort_key):
+            a(self.header_line(name))
+            try:
+                doc = self.get_doc(self.builtins[name])
+                if not doc:
+                    a(self.no_doc_string())
+                else:
+                    html = self.ffml.document_to_html(doc, name)
+                    if MARKUP_ERROR not in html:
+                        name_pos = html.find(name + '(')
+                        if name_pos < 0:
+                            rest_of_doc = ' -- ' + html
+                        else:
+                            rest_of_doc = html[name_pos + len(name):]
+                        html = f'<a href="ffdoc:{name}">{name}</a>{rest_of_doc}'
+                    a(html)
+            except Exception:
+                print('Exception in', name)
+                raise
+        self.doc_viewer_widget.setHtml(''.join(result))
 
 
 class ParenPosition:
@@ -50,7 +213,7 @@ class TemplateHighlighter(QSyntaxHighlighter):
 
     KEYWORDS_GPM = ['if', 'then', 'else', 'elif', 'fi', 'for', 'rof',
                     'separator', 'break', 'continue', 'return', 'in', 'inlist',
-                    'def', 'fed', 'limit']
+                    'inlist_field', 'def', 'fed', 'limit']
 
     KEYWORDS_PYTHON = ["and", "as", "assert", "break", "class", "continue", "def",
                        "del", "elif", "else", "except", "exec", "finally", "for", "from",
@@ -131,6 +294,7 @@ class TemplateHighlighter(QSyntaxHighlighter):
         config = self.Config = {}
         config["fontfamily"] = font_name
         app_palette = QApplication.instance().palette()
+        is_dark = QApplication.instance().is_dark_theme
 
         all_formats = (
             # name, color, bold, italic
@@ -139,9 +303,9 @@ class TemplateHighlighter(QSyntaxHighlighter):
             ("builtin", app_palette.color(QPalette.ColorRole.Link).name(), False, False),
             ("constant", app_palette.color(QPalette.ColorRole.Link).name(), False, False),
             ("identifier", None, False, True),
-            ("comment", "#007F00", False, True),
-            ("string", "#808000", False, False),
-            ("number", "#924900", False, False),
+            ("comment", '#00c700' if is_dark else "#007F00", False, True),
+            ("string", '#b6b600' if is_dark else "#808000", False, False),
+            ("number", '#d96d00' if is_dark else "#924900", False, False),
             ("decorator", "#FF8000", False, True),
             ("pyqt", None, False, False),
             ("lparen", None, True, True),
@@ -310,15 +474,36 @@ translate_table = str.maketrans({
 
 class TemplateDialog(QDialog, Ui_TemplateDialog):
 
+    tester_closed = pyqtSignal(object, object)
+
+    def setWindowTitle(self, title, dialog_number=None):
+        if dialog_number is None:
+            title = _('{title} (only one template dialog allowed)').format(title=title)
+        else:
+            title = _('{title} dialog number {number} (multiple template dialogs allowed)').format(
+                    title=title, number=dialog_number)
+        super().setWindowTitle(title)
+
     def __init__(self, parent, text, mi=None, fm=None, color_field=None,
                  icon_field_key=None, icon_rule_kind=None, doing_emblem=False,
                  text_is_placeholder=False, dialog_is_st_editor=False,
                  global_vars=None, all_functions=None, builtin_functions=None,
-                 python_context_object=None):
-        QDialog.__init__(self, parent)
+                 python_context_object=None, dialog_number=None):
+        # If dialog_number isn't None then we want separate non-modal windows
+        # that don't stay on top of the main dialog. This lets Alt-Tab work to
+        # switch between them. dialog_number must be set only by the template
+        # tester, not the rules dialogs etc that depend on modality.
+        if dialog_number is None:
+            QDialog.__init__(self, parent, flags=Qt.WindowType.Dialog)
+        else:
+            QDialog.__init__(self, None, flags=Qt.WindowType.Window)
+            self.raise_and_focus()  # Not needed on windows but here just in case
         Ui_TemplateDialog.__init__(self)
         self.setupUi(self)
+        self.setWindowIcon(self.windowIcon())
 
+        self.ffml = FFMLProcessor()
+        self.dialog_number = dialog_number
         self.coloring = color_field is not None
         self.iconing = icon_field_key is not None
         self.embleming = doing_emblem
@@ -381,10 +566,6 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
                 self.icon_field.setCurrentIndex(self.icon_field.findData(icon_field_key))
 
         self.setup_saved_template_editor(not dialog_is_st_editor, dialog_is_st_editor)
-        # Remove help icon on title bar
-        icon = self.windowIcon()
-        self.setWindowFlags(self.windowFlags()&(~Qt.WindowType.WindowContextHelpButtonHint))
-        self.setWindowIcon(icon)
 
         self.all_functions = all_functions if all_functions else formatter_functions().get_functions()
         self.builtins = (builtin_functions if builtin_functions else
@@ -405,8 +586,7 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
         # Set up the display table
         self.table_column_widths = None
         try:
-            self.table_column_widths = \
-                        gprefs.get('template_editor_table_widths', None)
+            self.table_column_widths = gprefs.get(self.geometry_string('template_editor_table_widths'), None)
         except:
             pass
         self.set_mi(mi, fm)
@@ -418,8 +598,14 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
         self.textbox.textChanged.connect(self.textbox_changed)
         self.set_editor_font()
 
+        self.doc_viewer = None
+        self.current_function_name = None
         self.documentation.setReadOnly(True)
+        self.documentation.setOpenLinks(False)
+        self.documentation.anchorClicked.connect(self.url_clicked)
         self.source_code.setReadOnly(True)
+        self.doc_button.clicked.connect(self.open_documentation_viewer)
+        self.general_info_button.clicked.connect(self.open_general_info_dialog)
 
         if text is not None:
             if text_is_placeholder:
@@ -445,7 +631,7 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
         except:
             self.builtin_source_dict = {}
 
-        func_names = sorted(self.all_functions)
+        self.function_names = func_names = sorted(self.all_functions)
         self.function.clear()
         self.function.addItem('')
         for f in func_names:
@@ -460,7 +646,7 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
             '<a href="{}">{}</a>'.format(
                 localize_user_manual_link('https://manual.calibre-ebook.com/template_lang.html'), tt))
         tt = _('Template function reference')
-        self.template_func_reference.setText(
+        self.tf_ref.setText(
             '<a href="{}">{}</a>'.format(
                 localize_user_manual_link('https://manual.calibre-ebook.com/generated/en/template_ref.html'), tt))
 
@@ -477,7 +663,38 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
         self.textbox.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.textbox.customContextMenuRequested.connect(self.show_context_menu)
         # Now geometry
-        self.restore_geometry(gprefs, 'template_editor_dialog_geometry')
+        self.restore_geometry(gprefs, self.geometry_string('template_editor_dialog_geometry'))
+
+    def url_clicked(self, qurl):
+        if qurl.scheme().startswith('http'):
+            safe_open_url(qurl)
+        elif qurl.scheme() == 'ffdoc':
+            name = qurl.path()
+            if name in self.function_names:
+                dex = self.function_names.index(name)
+                self.function.setCurrentIndex(dex+1)
+
+    def open_documentation_viewer(self):
+        if self.doc_viewer is None:
+            dv = self.doc_viewer = DocViewer(self.ffml, self.all_functions,
+                                             self.function_type_string, parent=self)
+            dv.finished.connect(self.doc_viewer_finished)
+            dv.show()
+        if self.current_function_name is not None:
+            self.doc_viewer.show_function(self.current_function_name)
+        else:
+            self.doc_viewer.show_all_functions()
+
+    def doc_viewer_finished(self):
+        self.doc_viewer = None
+
+    def open_general_info_dialog(self):
+        GeneralInformationDialog(include_general_doc=True, include_ffml_doc=True).exec()
+
+    def geometry_string(self, txt):
+        if self.dialog_number is None or self.dialog_number == 0:
+            return txt
+        return txt + '_' + str(self.dialog_number)
 
     def setup_saved_template_editor(self, show_buttonbox, show_doc_and_name):
         self.buttonBox.setVisible(show_buttonbox)
@@ -492,8 +709,9 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
         the contents of the field selectors for editing rules.
         '''
         self.fm = fm
+        from calibre.gui2.ui import get_gui
         if mi:
-            if not isinstance(mi, list):
+            if not isinstance(mi, (tuple, list)):
                 mi = (mi, )
         else:
             mi = Metadata(_('Title'), [_('Author')])
@@ -503,7 +721,7 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
             mi.rating = 4.0
             mi.tags = [_('Tag 1'), _('Tag 2')]
             mi.languages = ['eng']
-            mi.id = 1
+            mi.id = -1
             if self.fm is not None:
                 mi.set_all_user_metadata(self.fm.custom_field_metadata())
             else:
@@ -511,7 +729,6 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
                 # that we can validate any custom column names. The values for
                 # the columns will all be empty, which in some very unusual
                 # cases might cause formatter errors. We can live with that.
-                from calibre.gui2.ui import get_gui
                 fm = get_gui().current_db.new_api.field_metadata
                 mi.set_all_user_metadata(fm.custom_field_metadata())
             for col in mi.get_all_user_metadata(False):
@@ -522,14 +739,14 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
                 elif fm[col]['datatype'] == 'bool':
                     mi.set(col, False)
                 elif fm[col]['is_multiple']:
-                    mi.set(col, (col,))
+                    mi.set(col, [col])
                 else:
                     mi.set(col, col, 1)
             mi = (mi, )
         self.mi = mi
         tv = self.template_value
-        tv.setColumnCount(2)
-        tv.setHorizontalHeaderLabels((_('Book title'), _('Template value')))
+        tv.setColumnCount(3)
+        tv.setHorizontalHeaderLabels((_('Book title'), '', _('Template value')))
         tv.horizontalHeader().setStretchLastSection(True)
         tv.horizontalHeader().sectionResized.connect(self.table_column_resized)
         tv.setRowCount(len(mi))
@@ -551,16 +768,51 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
             w.setReadOnly(True)
             w.setText(mi[r].title)
             tv.setCellWidget(r, 0, w)
+            tb = QToolButton()
+            tb.setContentsMargins(0, 0, 0, 0)
+            tb.setIcon(QIcon.ic("edit_input.png"))
+            tb.setToolTip(_('Open Edit metadata on this book'))
+            tb.clicked.connect(partial(self.metadata_button_clicked, r))
+            tb.setEnabled(mi[r].get('id', -1) >= 0)
+            tv.setCellWidget(r, 1, tb)
             w = QLineEdit(tv)
             w.setReadOnly(True)
-            tv.setCellWidget(r, 1, w)
+            tv.setCellWidget(r, 2, w)
+        tv.resizeColumnToContents(1)
         self.set_waiting_message()
+
+    def metadata_button_clicked(self, row):
+        # Get the booklist row number for the book
+        mi = self.mi[row]
+        id_ = mi.get('id', -1)
+        if id_ > 0:
+            from calibre.gui2.ui import get_gui
+            db = get_gui().current_db
+            try:
+                idx = db.data.id_to_index(id_)
+                em = get_gui().iactions['Edit Metadata']
+                from calibre.gui2.library.views import PreserveViewState
+                with PreserveViewState(get_gui().current_view(), require_selected_ids=False):
+                    with em.different_parent(self):
+                        em.edit_metadata_for([idx], [id_], bulk=False)
+            except Exception:
+                pass
+            new_mi = []
+            for mi in self.mi:
+                try:
+                    pmi = db.new_api.get_proxy_metadata(mi.get('id'))
+                except Exception:
+                    pmi = None
+                new_mi.append(pmi)
+            self.set_mi(new_mi, self.fm)
+            if not self.break_box.isChecked():
+                self.display_values(str(self.textbox.toPlainText()))
 
     def set_waiting_message(self):
         if self.break_box.isChecked():
             for i in range(len(self.mi)):
-                self.template_value.cellWidget(i, 1).setText('')
-            self.template_value.cellWidget(0, 1).setText(
+                self.template_value.cellWidget(i, 2).setText('')
+            self.template_value.cellWidget(0, 2).setText(
                 _("*** Breakpoints are enabled. Waiting for the 'Go' button to be pressed"))
 
     def show_context_menu(self, point):
@@ -592,17 +844,17 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
     def add_python_template_header_text(self):
         self.textbox.setPlainText('''python:
 def evaluate(book, context):
-    # book is a calibre metadata object
-    # context is an instance of calibre.utils.formatter.PythonTemplateContext,
-    # which currently contains the following attributes:
-    # db: a calibre legacy database object.
-    # globals: the template global variable dictionary.
-    # arguments: is a list of arguments if the template is called by a GPM template, otherwise None.
-    # funcs: used to call Built-in/User functions and Stored GPM/Python templates.
-    # Example: context.funcs.list_re_group()
+\t# book is a calibre metadata object
+\t# context is an instance of calibre.utils.formatter.PythonTemplateContext,
+\t# which currently contains the following attributes:
+\t# db: a calibre legacy database object.
+\t# globals: the template global variable dictionary.
+\t# arguments: is a list of arguments if the template is called by a GPM template, otherwise None.
+\t# funcs: used to call Built-in/User functions and Stored GPM/Python templates.
+\t# Example: context.funcs.list_re_group()
 
-    # your Python code goes here
-    return 'a string'
+\t# your Python code goes here
+\treturn 'a string'
 ''')
 
     def set_word_wrap(self, to_what):
@@ -838,7 +1090,7 @@ def evaluate(book, context):
                                  template_functions=self.all_functions,
                                  break_reporter=self.break_reporter if r == break_on_mi else None,
                                  python_context_object=self.python_context_object)
-                w = tv.cellWidget(r, 1)
+                w = tv.cellWidget(r, 2)
                 w.setText(v.translate(translate_table))
                 w.setCursorPosition(0)
             finally:
@@ -866,12 +1118,15 @@ def evaluate(book, context):
         return (_('Stored user defined GPM template') if longform else _('Stored template'))
 
     def function_changed(self, toWhat):
-        name = str(self.function.itemData(toWhat))
+        self.current_function_name = name = str(self.function.itemData(toWhat))
         self.source_code.clear()
         self.documentation.clear()
         self.func_type.clear()
         if name in self.all_functions:
-            self.documentation.setPlainText(self.all_functions[name].doc)
+            doc = self.all_functions[name].doc
+            self.documentation.setHtml(self.ffml.document_to_html(doc, name))
+            if self.doc_viewer is not None:
+                self.doc_viewer.show_function(name)
             if name in self.builtins and name in self.builtin_source_dict:
                 self.source_code.setPlainText(self.builtin_source_dict[name])
             else:
@@ -884,8 +1139,8 @@ def evaluate(book, context):
             self.table_column_widths.append(self.template_value.columnWidth(c))
 
     def save_geometry(self):
-        gprefs['template_editor_table_widths'] = self.table_column_widths
-        super().save_geometry(gprefs, 'template_editor_dialog_geometry')
+        gprefs[self.geometry_string('template_editor_table_widths')] = self.table_column_widths
+        super().save_geometry(gprefs, self.geometry_string('template_editor_dialog_geometry'))
 
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key.Key_Escape:
@@ -926,8 +1181,13 @@ def evaluate(book, context):
             self.rule = ('', txt)
         self.save_geometry()
         QDialog.accept(self)
+        if self.dialog_number is not None:
+            self.tester_closed.emit(txt, self.dialog_number)
+        if self.doc_viewer is not None:
+            self.doc_viewer.close()
 
     def reject(self):
+        self.save_geometry()
         QDialog.reject(self)
         if self.dialog_is_st_editor:
             parent = self.parent()
@@ -938,6 +1198,10 @@ def evaluate(book, context):
                 parent = parent.parent()
                 if parent is None:
                     break
+        if self.dialog_number is not None:
+            self.tester_closed.emit(None, self.dialog_number)
+        if self.doc_viewer is not None:
+            self.doc_viewer.close()
 
 
 class BreakReporterItem(QTableWidgetItem):

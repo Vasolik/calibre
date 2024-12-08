@@ -5,7 +5,6 @@ __license__ = 'GPL v3'
 __copyright__ = '2015, Kovid Goyal <kovid at kovidgoyal.net>'
 
 import os
-import regex
 import textwrap
 import time
 from collections import defaultdict
@@ -14,29 +13,59 @@ from csv import writer as csv_writer
 from functools import lru_cache, partial
 from io import StringIO
 from operator import itemgetter
-from qt.core import (
-    QAbstractItemModel, QAbstractItemView, QAbstractTableModel, QApplication,
-    QByteArray, QComboBox, QDialogButtonBox, QFont, QFontDatabase, QHBoxLayout,
-    QIcon, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QModelIndex,
-    QPalette, QPixmap, QRadioButton, QRect, QSize, QSortFilterProxyModel, QSplitter,
-    QStackedLayout, QStackedWidget, QStyle, QStyledItemDelegate, Qt, QTableView,
-    QTextCursor, QTimer, QTreeView, QUrl, QVBoxLayout, QWidget, pyqtSignal
-)
 from threading import Thread
+
+import regex
+from qt.core import (
+    QAbstractItemModel,
+    QAbstractItemView,
+    QAbstractTableModel,
+    QApplication,
+    QByteArray,
+    QComboBox,
+    QDialogButtonBox,
+    QFont,
+    QFontDatabase,
+    QHBoxLayout,
+    QIcon,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QModelIndex,
+    QPalette,
+    QPixmap,
+    QRadioButton,
+    QRect,
+    QSize,
+    QSortFilterProxyModel,
+    QSplitter,
+    QStackedLayout,
+    QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    Qt,
+    QTableView,
+    QTextCursor,
+    QTimer,
+    QTreeView,
+    QUrl,
+    QVBoxLayout,
+    QWidget,
+    pyqtSignal,
+)
 
 from calibre import fit_image, human_readable
 from calibre.constants import DEBUG
-from calibre.ebooks.oeb.polish.report import (
-    ClassElement, ClassEntry, ClassFileMatch, CSSEntry, CSSFileMatch, CSSRule,
-    LinkLocation, MatchLocation, gather_data
-)
+from calibre.ebooks.oeb.polish.report import ClassElement, ClassEntry, ClassFileMatch, CSSEntry, CSSFileMatch, CSSRule, LinkLocation, MatchLocation, gather_data
 from calibre.gui2 import choose_save_file, error_dialog, open_url, question_dialog
 from calibre.gui2.progress_indicator import ProgressIndicator
 from calibre.gui2.tweak_book import current_container, dictionaries, tprefs
 from calibre.gui2.tweak_book.widgets import Dialog
 from calibre.gui2.webengine import RestartingWebEngineView
 from calibre.utils.icu import numeric_sort_key, primary_contains
-from calibre.utils.localization import calibre_langcode_to_name, canonicalize_lang
+from calibre.utils.localization import calibre_langcode_to_name, canonicalize_lang, ngettext
 from calibre.utils.unicode_names import character_name_from_code
 from calibre.utils.webengine import secure_webengine
 from polyglot.builtins import as_bytes, iteritems
@@ -236,8 +265,8 @@ class FilesView(QTableView):
 
 class FilesModel(FileCollection):
 
-    COLUMN_HEADERS = (_('Folder'), _('Name'), _('Size (KB)'), _('Type'))
-    alignments = Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignRight, Qt.AlignmentFlag.AlignLeft
+    COLUMN_HEADERS = (ngettext('Folder', 'Folders', 1), _('Name'), _('Size (KB)'), _('Type'), _('Word count'))
+    alignments = Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignRight, Qt.AlignmentFlag.AlignLeft, Qt.AlignmentFlag.AlignRight
     CATEGORY_NAMES = {
         'image':_('Image'),
         'text': _('Text'),
@@ -257,7 +286,7 @@ class FilesModel(FileCollection):
         self.total_size = sum(map(itemgetter(3), self.files))
         self.images_size = sum(map(itemgetter(3), (f for f in self.files if f.category == 'image')))
         self.fonts_size = sum(map(itemgetter(3), (f for f in self.files if f.category == 'font')))
-        self.sort_keys = tuple((psk(entry.dir), psk(entry.basename), entry.size, psk(self.CATEGORY_NAMES.get(entry.category, '')))
+        self.sort_keys = tuple((psk(entry.dir), psk(entry.basename), entry.size, psk(self.CATEGORY_NAMES.get(entry.category, '')), entry.word_count)
                                for entry in self.files)
         self.endResetModel()
 
@@ -282,6 +311,10 @@ class FilesModel(FileCollection):
                 return '%.2f ' % sz
             if col == 3:
                 return self.CATEGORY_NAMES.get(entry.category)
+            if col == 4:
+                ans = entry.word_count
+                if ans > -1:
+                    return str(ans)
         elif role == Qt.ItemDataRole.TextAlignmentRole:
             return int(Qt.AlignVCenter | self.alignments[index.column()])  # https://bugreports.qt.io/browse/PYSIDE-1974
 

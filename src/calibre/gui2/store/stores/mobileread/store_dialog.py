@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-
 __license__ = 'GPL 3'
 __copyright__ = '2011, John Schember <john@nachtimwald.com>'
 __docformat__ = 'restructuredtext en'
 
 
-from qt.core import Qt, QDialog, QIcon, QComboBox
+from qt.core import QComboBox, QDialog, QIcon, Qt
 
 from calibre.gui2.store.stores.mobileread.adv_search_builder import AdvSearchBuilderDialog
 from calibre.gui2.store.stores.mobileread.models import BooksModel
@@ -68,9 +67,13 @@ class MobileReadStoreDialog(QDialog, Ui_Dialog):
                 self.results_view.resizeColumnToContents(i)
 
         self.results_view.model().sort_col = self.plugin.config.get('dialog_sort_col', 0)
-        self.results_view.model().sort_order = self.plugin.config.get('dialog_sort_order', Qt.SortOrder.AscendingOrder)
-        self.results_view.model().sort(self.results_view.model().sort_col, self.results_view.model().sort_order)
-        self.results_view.header().setSortIndicator(self.results_view.model().sort_col, self.results_view.model().sort_order)
+        try:
+            so = Qt.SortOrder(self.plugin.config.get('dialog_sort_order', Qt.SortOrder.AscendingOrder))
+        except Exception:
+            so = Qt.SortOrder.AscendingOrder
+        self.results_view.model().sort_order = so
+        self.results_view.model().sort(self.results_view.model().sort_col, so)
+        self.results_view.header().setSortIndicator(self.results_view.model().sort_col, so)
 
     def save_state(self):
         self.save_geometry(self.plugin.config, 'dialog_geometry')

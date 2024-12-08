@@ -2,8 +2,6 @@
 # License: GPL v3 Copyright: 2019, Kovid Goyal <kovid at kovidgoyal.net>
 
 # Imports {{{
-
-
 import copy
 import json
 import os
@@ -11,32 +9,27 @@ import signal
 import sys
 from collections import namedtuple
 from functools import lru_cache
-from html5_parser import parse
-from io import BytesIO
 from itertools import count, repeat
-from qt.core import (
-    QApplication, QByteArray, QMarginsF, QObject, QPageLayout, Qt, QTimer, QUrl,
-    pyqtSignal, sip
-)
+
+from html5_parser import parse
+from qt.core import QApplication, QByteArray, QMarginsF, QObject, QPageLayout, Qt, QTimer, QUrl, pyqtSignal, sip
 from qt.webengine import (
-    QWebEnginePage, QWebEngineProfile, QWebEngineSettings,
-    QWebEngineUrlRequestInterceptor, QWebEngineUrlRequestJob,
-    QWebEngineUrlSchemeHandler
+    QWebEnginePage,
+    QWebEngineProfile,
+    QWebEngineSettings,
+    QWebEngineUrlRequestInterceptor,
+    QWebEngineUrlRequestJob,
+    QWebEngineUrlSchemeHandler,
 )
 
 from calibre import detect_ncpus, human_readable, prepare_string_for_xml
-from calibre.constants import (
-    FAKE_HOST, FAKE_PROTOCOL, __version__, ismacos, iswindows
-)
+from calibre.constants import FAKE_HOST, FAKE_PROTOCOL, __appname__, __version__, ismacos, iswindows
 from calibre.ebooks.metadata.xmp import metadata_to_xmp_packet
 from calibre.ebooks.oeb.base import XHTML, XPath
 from calibre.ebooks.oeb.polish.container import Container as ContainerBase
 from calibre.ebooks.oeb.polish.toc import get_toc
 from calibre.ebooks.oeb.polish.utils import guess_type
-from calibre.ebooks.pdf.image_writer import (
-    Image, PDFMetadata, draw_image_page, get_page_layout
-)
-from calibre.ebooks.pdf.render.serialize import PDFStream
+from calibre.ebooks.pdf.image_writer import PDFMetadata, get_page_layout
 from calibre.gui2 import setup_unix_signals
 from calibre.srv.render_book import check_for_maths
 from calibre.utils.fonts.sfnt.container import Sfnt, UnsupportedFont
@@ -45,9 +38,8 @@ from calibre.utils.fonts.sfnt.merge import merge_truetype_fonts_for_pdf
 from calibre.utils.fonts.sfnt.subset import pdf_subset
 from calibre.utils.logging import default_log
 from calibre.utils.monotonic import monotonic
-from calibre.utils.podofo import (
-    dedup_type3_fonts, get_podofo, remove_unused_fonts, set_metadata_implementation
-)
+from calibre.utils.podofo import add_image_page, dedup_type3_fonts, get_podofo, remove_unused_fonts, set_metadata_implementation
+from calibre.utils.resources import get_path as P
 from calibre.utils.short_uuid import uuid4
 from calibre.utils.webengine import secure_webengine, send_reply, setup_profile
 from polyglot.builtins import as_bytes, iteritems
@@ -81,7 +73,15 @@ def create_skeleton(container):
     spine_name = tuple(container.spine_names)[-1][0]
     root = container.parsed(spine_name)
     root = copy.deepcopy(root)
-    body = last_tag(root)
+    body = None
+    for child in tuple(root.iterchildren('*')):
+        if body is None:
+            if child.tag == XHTML('body') or child.tag == 'body':
+                body = child
+        else:
+            root.remove(child)
+    if body is None:
+        body = last_tag(root)
     body.text = body.tail = None
     del body[:]
     name = container.add_file(spine_name, b'', modify_name_if_needed=True)
@@ -327,6 +327,7 @@ class Renderer(QWebEnginePage):
         url = QUrl(f'{FAKE_PROTOCOL}://{FAKE_HOST}/')
         url.setPath(path)
         self.setUrl(url)
+        self.job_started_at = monotonic()
 
 
 class RequestInterceptor(QWebEngineUrlRequestInterceptor):
@@ -399,9 +400,12 @@ class RenderManager(QObject):
 
     def convert_html_files(self, jobs, settle_time=0, wait_for_title=None, has_maths=None):
         self.has_maths = has_maths or {}
+        self.render_count = 0
+        self.total_count = len(jobs)
         while len(self.workers) < min(len(jobs), self.max_workers):
             self.create_worker()
         self.pending = list(jobs)
+        self.log(f'Rendering {len(self.pending)} HTML files')
         self.results = {}
         self.settle_time = settle_time
         self.wait_for_title = wait_for_title
@@ -442,6 +446,12 @@ class RenderManager(QObject):
 
     def work_done(self, worker, result):
         self.results[worker.result_key] = result
+        for w in self.workers:
+            if not w.working and w.job_started_at > 0:
+                time_taken = monotonic() - w.job_started_at
+                self.render_count += 1
+                self.log.debug(f'Rendered: {worker.result_key} in {time_taken:.1f} seconds ({self.render_count}/{self.total_count})')
+                w.job_started_at = 0
         if self.pending:
             self.assign_work()
         else:
@@ -483,15 +493,8 @@ def update_metadata(pdf_doc, pdf_metadata):
 
 
 def add_cover(pdf_doc, cover_data, page_layout, opts):
-    buf = BytesIO()
-    page_size = page_layout.fullRectPoints().size()
-    img = Image(cover_data)
-    writer = PDFStream(buf, (page_size.width(), page_size.height()), compress=True)
-    writer.apply_fill(color=(1, 1, 1))
-    draw_image_page(writer, img, preserve_aspect_ratio=opts.preserve_cover_aspect_ratio)
-    writer.end()
-    cover_pdf_doc = data_as_pdf_doc(buf.getvalue())
-    pdf_doc.insert_existing_page(cover_pdf_doc)
+    r = page_layout.fullRect(QPageLayout.Unit.Point)
+    add_image_page(pdf_doc, cover_data, page_size=(r.left(), r.top(), r.width(), r.height()), preserve_aspect_ratio=opts.preserve_cover_aspect_ratio)
 # }}}
 
 
@@ -840,14 +843,18 @@ def merge_font_files(fonts, log):
     descendant_fonts = [f for f in fonts if f['Subtype'] != 'Type0']
     total_size = sum(len(f['Data']) for f in descendant_fonts)
     merged_sfnt = merge_truetype_fonts_for_pdf(tuple(f['sfnt'] for f in descendant_fonts), log)
-    w_arrays = tuple(filter(None, (f['W'] for f in descendant_fonts)))
-    glyph_ids = all_glyph_ids_in_w_arrays(w_arrays, as_set=True)
-    h_arrays = tuple(filter(None, (f['W2'] for f in descendant_fonts)))
-    glyph_ids |= all_glyph_ids_in_w_arrays(h_arrays, as_set=True)
-    try:
-        pdf_subset(merged_sfnt, glyph_ids)
-    except NoGlyphs:
-        log.warn(f'Subsetting of {fonts[0]["BaseFont"]} failed with no glyphs found, ignoring')
+    if False:
+        # As of Qt 6.7.2 webengine produces W arrays that do not contain all
+        # used glyph ids, so we cannot subset. Can be tested by
+        # echo 'this is a test boulder sentence' > test.txt; ebook-convert test.txt .pdf
+        w_arrays = tuple(filter(None, (f['W'] for f in descendant_fonts)))
+        glyph_ids = all_glyph_ids_in_w_arrays(w_arrays, as_set=True)
+        h_arrays = tuple(filter(None, (f['W2'] for f in descendant_fonts)))
+        glyph_ids |= all_glyph_ids_in_w_arrays(h_arrays, as_set=True)
+        try:
+            pdf_subset(merged_sfnt, glyph_ids)
+        except NoGlyphs:
+            log.warn(f'Subsetting of {fonts[0]["BaseFont"]} failed with no glyphs found, ignoring')
     font_data = merged_sfnt()[0]
     log(f'Merged {len(fonts)} instances of {fonts[0]["BaseFont"]} reducing size from {human_readable(total_size)} to {human_readable(len(font_data))}')
     return font_data, tuple(f['Reference'] for f in descendant_fonts)
@@ -902,7 +909,7 @@ def test_merge_fonts():
 PAGE_NUMBER_TEMPLATE = '<footer><div style="margin: auto">_PAGENUM_</div></footer>'
 
 
-def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map, page_layout, page_margins_map, pdf_metadata, report_progress, toc=None):
+def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map, page_layout, page_margins_map, pdf_metadata, report_progress, toc, log):
     header_template, footer_template = opts.pdf_header_template, opts.pdf_footer_template
     if not footer_template and opts.pdf_page_numbers:
         footer_template = PAGE_NUMBER_TEMPLATE
@@ -911,12 +918,13 @@ def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map
     report_progress(0.8, _('Adding headers and footers'))
     name = create_skeleton(container)
     root = container.parsed(name)
-    reset_css = 'margin: 0; padding: 0; border-width: 0; background-color: unset;'
+    reset_css = 'margin: 0; padding: 0; border-width: 0; background-color: unset; column-count: unset; column-width: unset;'
     root.set('style', reset_css)
     body = last_tag(root)
     body.attrib.pop('id', None)
     body.set('style', reset_css)
     job = job_for_name(container, name, Margins(0, 0, 0, 0), page_layout)
+    page_layout = job[1]
 
     def m(tag_name, text=None, style=None, **attrs):
         ans = root.makeelement(XHTML(tag_name), **attrs)
@@ -1001,6 +1009,9 @@ def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map
         toplevel_toc_map = stack_to_map(create_toc_stack(tc()))
         toplevel_pagenum_map, toplevel_pages_map = page_counts_map(tc())
 
+    dpi = 96  # dont know how to query Qt for this, seems to be the same on all platforms
+    def pt_to_px(pt): return int(pt * dpi / 72)
+
     def create_container(page_num, margins):
         style = {
             'page-break-inside': 'avoid',
@@ -1018,11 +1029,11 @@ def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map
             'overflow': 'hidden',
             'background-color': 'unset',
         }
-
         ans = m('div', style=style, id=f'p{page_num}')
         return ans
 
-    def format_template(template, page_num, height):
+    def format_template(template, page_num, height, margins):
+        div_width_px = pt_to_px(page_layout.paintRectPoints().width() - margins.left - margins.right)
         template = template.replace('_TOP_LEVEL_SECTION_PAGES_', str(toplevel_pagenum_map[page_num - 1]))
         template = template.replace('_TOP_LEVEL_SECTION_PAGENUM_', str(toplevel_pages_map[page_num - 1]))
         template = template.replace('_TOTAL_PAGES_', str(pages_in_doc))
@@ -1031,6 +1042,8 @@ def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map
         template = template.replace('_AUTHOR_', prepare_string_for_xml(pdf_metadata.author, True))
         template = template.replace('_TOP_LEVEL_SECTION_', prepare_string_for_xml(toplevel_toc_map[page_num - 1]))
         template = template.replace('_SECTION_', prepare_string_for_xml(page_toc_map[page_num - 1]))
+        template = template.replace('_WIDTH_PIXELS_', str(div_width_px))
+        template = template.replace('_HEIGHT_PIXELS_', str(pt_to_px(height)))
         troot = parse(template, namespace_elements=True)
         ans = last_tag(troot)[0]
         style = ans.get('style') or ''
@@ -1053,12 +1066,12 @@ def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map
         div = create_container(page_num, margins)
         body.append(div)
         if header_template:
-            div.append(format_template(header_template, page_num, margins.top))
+            div.append(format_template(header_template, page_num, margins.top, margins))
         if footer_template:
-            div.append(format_template(footer_template, page_num, margins.bottom))
+            div.append(format_template(footer_template, page_num, margins.bottom, margins))
 
     container.commit()
-    # print(open(job[0]).read())
+    # print(container.raw_data(name))
     results = manager.convert_html_files([job], settle_time=1)
     data = results[name]
     if not isinstance(data, bytes):
@@ -1068,8 +1081,7 @@ def add_header_footer(manager, opts, pdf_doc, container, page_number_display_map
     first_page_num = pdf_doc.page_count()
     num_pages = doc.page_count()
     if first_page_num != num_pages:
-        raise ValueError('The number of header/footers pages ({}) != number of document pages ({})'.format(
-            num_pages, first_page_num))
+        raise ValueError(f'The number of header/footers pages ({num_pages}) < number of document pages ({first_page_num})')
     pdf_doc.append(doc)
     pdf_doc.impose(1, first_page_num + 1, num_pages)
     report_progress(0.9, _('Headers and footers added'))
@@ -1137,7 +1149,8 @@ def convert(opf_path, opts, metadata=None, output_path=None, log=default_log, co
     results = manager.convert_html_files(jobs, settle_time=1, has_maths=has_maths)
     num_pages = 0
     page_margins_map = []
-    for margin_file in margin_files:
+    all_docs = []
+    for i, margin_file in enumerate(margin_files):
         name = margin_file.name
         data = results[name]
         if not isinstance(data, bytes):
@@ -1147,11 +1160,10 @@ def convert(opf_path, opts, metadata=None, output_path=None, log=default_log, co
         doc_pages = doc.page_count()
         page_margins_map.extend(repeat(resolve_margins(margin_file.margins, page_layout), doc_pages))
         num_pages += doc_pages
+        all_docs.append(doc)
 
-        if pdf_doc is None:
-            pdf_doc = doc
-        else:
-            pdf_doc.append(doc)
+    pdf_doc = all_docs[0]
+    pdf_doc.append(*all_docs[1:])
 
     page_number_display_map = get_page_number_display_map(manager, opts, num_pages, log)
 
@@ -1179,7 +1191,7 @@ def convert(opf_path, opts, metadata=None, output_path=None, log=default_log, co
     add_header_footer(
         manager, opts, pdf_doc, container,
         page_number_display_map, page_layout, page_margins_map,
-        pdf_metadata, report_progress, toc if has_toc else None)
+        pdf_metadata, report_progress, toc if has_toc else None, log)
 
     num_removed = remove_unused_fonts(pdf_doc)
     if num_removed:
@@ -1209,6 +1221,7 @@ def convert(opf_path, opts, metadata=None, output_path=None, log=default_log, co
 
     if metadata is not None:
         update_metadata(pdf_doc, pdf_metadata)
+    pdf_doc.creator = pdf_doc.producer = __appname__ + ' ' + __version__
     report_progress(1, _('Updated metadata in PDF'))
 
     if opts.uncompressed_pdf:

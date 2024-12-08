@@ -7,7 +7,10 @@ __license__   = 'GPL v3'
 __copyright__ = '2010, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-import re, string, traceback, numbers
+import numbers
+import re
+import string
+import traceback
 from collections import OrderedDict
 from functools import partial
 from math import modf
@@ -17,9 +20,9 @@ from calibre import prints
 from calibre.constants import DEBUG
 from calibre.ebooks.metadata.book.base import field_metadata
 from calibre.utils.config import tweaks
-from calibre.utils.formatter_functions import (
-    formatter_functions, get_database, function_object_type, StoredObjectType)
+from calibre.utils.formatter_functions import StoredObjectType, formatter_functions, function_object_type, get_database
 from calibre.utils.icu import strcmp
+from calibre.utils.localization import _
 from polyglot.builtins import error_message
 
 
@@ -55,6 +58,8 @@ class Node:
     NODE_LOCAL_FUNCTION_CALL = 29
     NODE_RANGE = 30
     NODE_SWITCH = 31
+    NODE_SWITCH_IF = 32
+    NODE_LIST_COUNT_FIELD = 33
 
     def __init__(self, line_number, name):
         self.my_line_number = line_number
@@ -289,6 +294,13 @@ class SwitchNode(Node):
         self.expression_list = expression_list
 
 
+class SwitchIfNode(Node):
+    def __init__(self, line_number, expression_list):
+        Node.__init__(self, line_number, 'switch_if()')
+        self.node_type = self.NODE_SWITCH_IF
+        self.expression_list = expression_list
+
+
 class ContainsNode(Node):
     def __init__(self, line_number, arguments):
         Node.__init__(self, line_number, 'contains()')
@@ -318,6 +330,13 @@ class StrcatNode(Node):
         Node.__init__(self, line_number, 'strcat()')
         self.node_type = self.NODE_STRCAT
         self.expression_list = expression_list
+
+
+class ListCountFieldNode(Node):
+    def __init__(self, line_number, expression):
+        Node.__init__(self, line_number, 'list_count_field()')
+        self.node_type = self.NODE_LIST_COUNT_FIELD
+        self.expression = expression
 
 
 class _Parser:
@@ -633,7 +652,7 @@ class _Parser:
     def compare_expr(self):
         left = self.add_subtract_expr()
         if (self.token_op_is_string_infix_compare() or
-                self.token_is('in') or self.token_is('inlist')):
+                self.token_is('in') or self.token_is('inlist') or self.token_is('inlist_field')):
             operator = self.token()
             return StringCompareNode(self.line_number, operator, left, self.add_subtract_expr())
         if self.token_op_is_numeric_infix_compare():
@@ -687,6 +706,8 @@ class _Parser:
                              lambda ln, args: FirstNonEmptyNode(ln, args)),
         'switch':           (lambda args: len(args) >= 3 and (len(args) %2) == 0,
                              lambda ln, args: SwitchNode(ln, args)),
+        'switch_if':        (lambda args: len(args) > 0 and (len(args) %2) == 1,
+                             lambda ln, args: SwitchIfNode(ln, args)),
         'assign':           (lambda args: len(args) == 2 and len(args[0]) == 1 and args[0][0].node_type == Node.NODE_RVALUE,
                              lambda ln, args: AssignNode(ln, args[0][0].name, args[1])),
         'contains':         (lambda args: len(args) == 4,
@@ -696,7 +717,9 @@ class _Parser:
         'print':            (lambda _: True,
                              lambda ln, args: PrintNode(ln, args)),
         'strcat':           (lambda _: True,
-                             lambda ln, args: StrcatNode(ln, args))
+                             lambda ln, args: StrcatNode(ln, args)),
+        'list_count_field': (lambda args: len(args) == 1,
+                             lambda ln, args: ListCountFieldNode(ln, args[0]))
     }
 
     def expr(self):
@@ -830,7 +853,7 @@ class StopException(Exception):
         super().__init__('Template evaluation stopped')
 
 
-class PythonTemplateContext(object):
+class PythonTemplateContext:
 
     def __init__(self):
         # Set attributes we already know must exist.
@@ -1303,11 +1326,36 @@ class _Interpreter:
             self.break_reporter(prog.node_name, res, prog.line_number)
         return res
 
+    def do_node_switch_if(self, prog):
+        for i in range(0, len(prog.expression_list)-1, 2):
+            tst = self.expr(prog.expression_list[i])
+            if self.break_reporter:
+                self.break_reporter("switch_if(): test expr", tst, prog.line_number)
+            if tst:
+                res = self.expr(prog.expression_list[i+1])
+                if self.break_reporter:
+                    self.break_reporter("switch_if(): value expr", res, prog.line_number)
+                return res
+        res = self.expr(prog.expression_list[-1])
+        if (self.break_reporter):
+            self.break_reporter("switch_if(): default expr", res, prog.line_number)
+        return res
+
     def do_node_strcat(self, prog):
         res = ''.join([self.expr(expr) for expr in prog.expression_list])
         if self.break_reporter:
             self.break_reporter(prog.node_name, res, prog.line_number)
         return res
+
+    def do_node_list_count_field(self, prog):
+        name = field_metadata.search_term_to_field_key(self.expr(prog.expression))
+        res = getattr(self.parent_book, name, None)
+        if res is None or not isinstance(res, (list, tuple, set, dict)):
+            self.error(_("Field '{0}' is either not a field or not a list").format(name), prog.line_number)
+        ans = str(len(res))
+        if self.break_reporter:
+            self.break_reporter(prog.node_name, ans, prog.line_number)
+        return ans
 
     def do_node_break(self, prog):
         if (self.break_reporter):
@@ -1350,11 +1398,32 @@ class _Interpreter:
                                            [v.strip() for v in y.split(',') if v.strip()]))
         }
 
+    def do_inlist_field(self, left, right, prog):
+        res = getattr(self.parent_book, right, None)
+        if res is None or not isinstance(res, (list, tuple, set, dict)):
+            self.error(_("Field '{0}' is either not a field or not a list").format(right), prog.line_number)
+        pat = re.compile(left, flags=re.I)
+        if isinstance(res, dict): # identifiers
+            for k,v in res.items():
+                if re.search(pat, f'{k}:{v}'):
+                    return '1'
+        else:
+            for v in res:
+                if re.search(pat, v):
+                    return '1'
+        return ''
+
     def do_node_string_infix(self, prog):
         try:
             left = self.expr(prog.left)
             right = self.expr(prog.right)
-            res = '1' if self.INFIX_STRING_COMPARE_OPS[prog.operator](left, right) else ''
+            try:
+                res = '1' if self.INFIX_STRING_COMPARE_OPS[prog.operator](left, right) else ''
+            except KeyError:
+                if prog.operator == 'inlist_field':
+                    res = self.do_inlist_field(left, right, prog)
+                else:
+                    raise
             if (self.break_reporter):
                 self.break_reporter(prog.node_name, res, prog.line_number)
             return res
@@ -1519,6 +1588,7 @@ class _Interpreter:
         Node.NODE_CALL_STORED_TEMPLATE:  do_node_stored_template_call,
         Node.NODE_FIRST_NON_EMPTY:       do_node_first_non_empty,
         Node.NODE_SWITCH:                do_node_switch,
+        Node.NODE_SWITCH_IF:             do_node_switch_if,
         Node.NODE_FOR:                   do_node_for,
         Node.NODE_RANGE:                 do_node_range,
         Node.NODE_GLOBALS:               do_node_globals,
@@ -1537,6 +1607,7 @@ class _Interpreter:
         Node.NODE_BINARY_STRINGOP:       do_node_stringops,
         Node.NODE_LOCAL_FUNCTION_DEFINE: do_node_local_function_define,
         Node.NODE_LOCAL_FUNCTION_CALL:   do_node_local_function_call,
+        Node.NODE_LIST_COUNT_FIELD:      do_node_list_count_field,
         }
 
     def expr(self, prog):
@@ -1634,6 +1705,7 @@ class TemplateFormatter(string.Formatter):
             (r'(separator|limit)\b',     lambda x,t: (_Parser.LEX_KEYWORD, t)),  # noqa
             (r'(def|fed|continue)\b',    lambda x,t: (_Parser.LEX_KEYWORD, t)),  # noqa
             (r'(return|inlist|break)\b', lambda x,t: (_Parser.LEX_KEYWORD, t)),  # noqa
+            (r'(inlist_field)\b',        lambda x,t: (_Parser.LEX_KEYWORD, t)),  # noqa
             (r'(\|\||&&|!|{|})',         lambda x,t: (_Parser.LEX_OP, t)),  # noqa
             (r'[(),=;:\+\-*/&]',         lambda x,t: (_Parser.LEX_OP, t)),  # noqa
             (r'-?[\d\.]+',               lambda x,t: (_Parser.LEX_CONST, t)),  # noqa

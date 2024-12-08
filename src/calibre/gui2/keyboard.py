@@ -7,20 +7,48 @@ __docformat__ = 'restructuredtext en'
 
 from collections import OrderedDict
 from functools import partial
-from gettext import pgettext
 
-from qt.core import (QObject, QKeySequence, QAbstractItemModel, QModelIndex, QItemSelectionModel,
-        Qt, QStyledItemDelegate, QTextDocument, QStyle, pyqtSignal, QFrame, QAbstractItemView, QMenu,
-        QApplication, QSize, QRectF, QWidget, QTreeView, QHBoxLayout, QVBoxLayout, QAbstractItemDelegate,
-        QGridLayout, QLabel, QRadioButton, QPushButton, QToolButton, QIcon, QEvent, sip, QKeyCombination)
+from qt.core import (
+    QAbstractItemDelegate,
+    QAbstractItemModel,
+    QAbstractItemView,
+    QApplication,
+    QEvent,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QIcon,
+    QItemSelectionModel,
+    QKeyCombination,
+    QKeySequence,
+    QLabel,
+    QMenu,
+    QModelIndex,
+    QObject,
+    QPushButton,
+    QRadioButton,
+    QRectF,
+    QSize,
+    QStyle,
+    QStyledItemDelegate,
+    Qt,
+    QTextDocument,
+    QToolButton,
+    QTreeView,
+    QVBoxLayout,
+    QWidget,
+    pyqtSignal,
+    sip,
+)
 
-from calibre.utils.config import JSONConfig
+from calibre import prepare_string_for_xml, prints
 from calibre.constants import DEBUG
-from calibre import prints, prepare_string_for_xml
-from calibre.utils.icu import sort_key, lower
 from calibre.gui2 import error_dialog, info_dialog
-from calibre.utils.search_query_parser import SearchQueryParser, ParseException
 from calibre.gui2.search_box import SearchBox2
+from calibre.utils.config import JSONConfig
+from calibre.utils.icu import lower, sort_key
+from calibre.utils.localization import pgettext
+from calibre.utils.search_query_parser import ParseException, SearchQueryParser
 from polyglot.builtins import iteritems, itervalues
 
 ROOT = QModelIndex()
@@ -50,7 +78,7 @@ def finalize(shortcuts, custom_keys_map={}):  # {{{
     '''
     Resolve conflicts and assign keys to every action in shortcuts, which must
     be a OrderedDict. User specified mappings of unique names to keys (as a
-    list of strings) should be passed in in custom_keys_map. Return a mapping
+    list of strings) should be passed in custom_keys_map. Return a mapping
     of unique names to resolved keys. Also sets the set_to_default member
     correctly for each shortcut.
     '''
@@ -419,6 +447,7 @@ class Editor(QFrame):  # {{{
             l.addWidget(la, off+which, 0, 1, 3)
             setattr(self, 'label%d'%which, la)
             button = QPushButton(_('None'), self)
+            button.setObjectName(_('None'))
             button.clicked.connect(partial(self.capture_clicked, which=which))
             button.installEventFilter(self)
             setattr(self, 'button%d'%which, button)
@@ -463,7 +492,9 @@ class Editor(QFrame):  # {{{
             self.use_custom.setChecked(True)
             for key, which in zip(self.current_keys, [1,2]):
                 button = getattr(self, 'button%d'%which)
-                button.setText(key.toString(QKeySequence.SequenceFormat.NativeText))
+                ns = key.toString(QKeySequence.SequenceFormat.NativeText)
+                button.setText(ns.replace('&', '&&'))
+                button.setObjectName(ns)
 
     def custom_toggled(self, checked):
         for w in ('1', '2'):
@@ -480,6 +511,7 @@ class Editor(QFrame):  # {{{
     def clear_clicked(self, which=0):
         button = getattr(self, 'button%d'%which)
         button.setText(_('None'))
+        button.setObjectName(_('None'))
 
     def eventFilter(self, obj, event):
         if self.capture and obj in (self.button1, self.button2):
@@ -502,7 +534,9 @@ class Editor(QFrame):  # {{{
 
         button = getattr(self, 'button%d'%which)
         button.setStyleSheet('QPushButton { font-weight: normal}')
-        button.setText(sequence.toString(QKeySequence.SequenceFormat.NativeText))
+        ns = sequence.toString(QKeySequence.SequenceFormat.NativeText)
+        button.setText(ns.replace('&', '&&'))
+        button.setObjectName(ns)
         self.capture = 0
         dup_desc = self.dup_check(sequence)
         if dup_desc is not None:
@@ -526,8 +560,8 @@ class Editor(QFrame):  # {{{
         ans = []
         for which in (1, 2):
             button = getattr(self, 'button%d'%which)
-            t = str(button.text())
-            if t == _('None'):
+            t = button.objectName()
+            if not t or t == _('None'):
                 continue
             ks = QKeySequence(t, QKeySequence.SequenceFormat.NativeText)
             if not ks.isEmpty():

@@ -5,13 +5,16 @@ __license__   = 'GPL v3'
 __copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-import weakref, operator, numbers, sys
+import numbers
+import operator
+import sys
+import weakref
 from functools import partial
-from polyglot.builtins import iteritems, itervalues
 
-from calibre.ebooks.metadata import title_sort
-from calibre.utils.config_base import tweaks, prefs
 from calibre.db.write import uniq
+from calibre.ebooks.metadata import title_sort
+from calibre.utils.config_base import prefs, tweaks
+from polyglot.builtins import iteritems, itervalues
 
 
 def sanitize_sort_field_name(field_metadata, field):
@@ -229,7 +232,7 @@ class View:
         try:
             return self._real_map_filtered_id_to_row[book_id]
         except KeyError:
-            raise ValueError(f'No such book_id {book_id}')
+            raise ValueError(f'No such book_id {book_id} in current view')
     row = index_to_id
 
     def index(self, book_id, cache=False):

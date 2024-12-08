@@ -7,11 +7,12 @@ __docformat__ = 'restructuredtext en'
 
 import json
 
-from qt.core import Qt, QDialog
+from qt.core import QDialog, Qt
 
-from calibre.gui2.convert.look_and_feel_ui import Ui_Form
-from calibre.gui2.convert import Widget
 from calibre.ebooks.conversion.config import OPTIONS
+from calibre.gui2.convert import Widget
+from calibre.gui2.convert.look_and_feel_ui import Ui_Form
+from calibre.startup import connect_lambda
 from polyglot.builtins import iteritems
 
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2022, Kovid Goyal <kovid at kovidgoyal.net>
 
 
@@ -7,13 +6,18 @@
 # our own restore geometry
 
 
-from qt.core import QRect, QScreen, QSize, QWidget, QApplication, Qt
+from qt.core import QApplication, QRect, QScreen, QSize, Qt, QWidget
+
 from calibre.constants import is_debugging as _is_debugging
 from calibre.utils.config_base import tweaks
 
 
+def geometry_pref_name(name):
+    return f'geometry-of-{name}'
+
+
 def is_debugging():
-    return _is_debugging() and not tweaks.get('suppress_geometry_debug_output')
+    return _is_debugging() and tweaks.get('show_geometry_debug_output')
 
 
 def debug(*a, **kw):
@@ -77,6 +81,10 @@ def geometry_for_restore_as_dict(self: QWidget):
     return ans
 
 
+def delete_geometry(prefs: dict, name: str):
+    prefs.pop(geometry_pref_name(name), None)
+
+
 def save_geometry(self: QWidget, prefs: dict, name: str):
     x = geometry_for_restore_as_dict(self)
     if x:
@@ -84,7 +92,7 @@ def save_geometry(self: QWidget, prefs: dict, name: str):
             debug('Saving geometry for:', name)
             debug(x)
         x['qt'] = bytearray(self.saveGeometry())
-        prefs.set(f'geometry-of-{name}', x)
+        prefs.set(geometry_pref_name(name), x)
 
 
 def find_matching_screen(screen_as_dict):
@@ -122,10 +130,10 @@ def _do_restore(self: QWidget, s: QScreen, geometry: QRect, saved_data: dict):
     self.setGeometry(geometry)
     if saved_data['full_screened']:
         debug('Restoring widget to full screen')
-        self.showFullScreen()
+        self.setWindowState(Qt.WindowState.WindowFullScreen)
     elif saved_data['maximized']:
         debug('Restoring widget to maximized')
-        self.showMaximized()
+        self.setWindowState(Qt.WindowState.WindowMaximized)
     return True
 
 
@@ -146,14 +154,14 @@ def _restore_to_new_screen(self: QWidget, s: QScreen, saved_data: dict) -> bool:
     sz = QSize(min(saved_geometry.width(), available_size.width()), min(saved_geometry.height(), available_size.height()))
     if not sz.isValid():
         return False
-    max_left = available_geometry.left() + (available_size.width() - sz.width())
-    max_top = available_geometry.top() + (available_size.height() - sz.height())
-    geometry = QRect(min(saved_geometry.left(), max_left), min(saved_geometry.top(), max_top), sz.width(), sz.height())
+    left = available_geometry.left() + (available_size.width() - sz.width()) // 2
+    top = available_geometry.top() + (available_size.height() - sz.height()) // 2
+    geometry = QRect(left, top, sz.width(), sz.height())
     return _do_restore(self, s, geometry, saved_data)
 
 
 def _restore_geometry(self: QWidget, prefs: dict, name: str, get_legacy_saved_geometry: callable = None) -> bool:
-    x = prefs.get(f'geometry-of-{name}')
+    x = prefs.get(geometry_pref_name(name))
     if not x:
         old = get_legacy_saved_geometry() if get_legacy_saved_geometry else prefs.get(name)
         if old is not None:

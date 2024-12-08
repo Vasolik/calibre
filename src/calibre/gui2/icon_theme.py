@@ -17,23 +17,51 @@ from functools import lru_cache
 from io import BytesIO
 from itertools import count
 from multiprocessing.pool import ThreadPool
-from qt.core import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFormLayout, QGroupBox, QHBoxLayout, QIcon, QImage, QImageReader,
-    QItemSelectionModel, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPen,
-    QPixmap, QProgressDialog, QSize, QSpinBox, QSplitter, QStackedLayout,
-    QStaticText, QStyle, QStyledItemDelegate, Qt, QTabWidget, QTextEdit, QVBoxLayout,
-    QWidget, pyqtSignal, sip
-)
 from threading import Event, Thread
+from xml.sax.saxutils import escape
 
-from calibre import detect_ncpus as cpu_count, fit_image, human_readable, walk
+from qt.core import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QIcon,
+    QImage,
+    QImageReader,
+    QItemSelectionModel,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPen,
+    QPixmap,
+    QProgressDialog,
+    QSize,
+    QSpinBox,
+    QSplitter,
+    QStackedLayout,
+    QStaticText,
+    QStyle,
+    QStyledItemDelegate,
+    Qt,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    pyqtSignal,
+    sip,
+)
+
+from calibre import detect_ncpus as cpu_count
+from calibre import fit_image, human_readable, walk
 from calibre.constants import cache_dir
 from calibre.customize.ui import interface_actions
-from calibre.gui2 import (
-    choose_dir, choose_save_file, empty_index, error_dialog, gprefs,
-    icon_resource_manager, must_use_qt, safe_open_url
-)
+from calibre.gui2 import choose_dir, choose_save_file, empty_index, error_dialog, gprefs, icon_resource_manager, must_use_qt, safe_open_url
 from calibre.gui2.dialogs.progress import ProgressDialog
 from calibre.gui2.progress_indicator import ProgressIndicator
 from calibre.gui2.widgets2 import Dialog
@@ -42,6 +70,8 @@ from calibre.utils.filenames import ascii_filename, atomic_rename
 from calibre.utils.https import HTTPError, get_https_resource_securely
 from calibre.utils.icu import numeric_sort_key as sort_key
 from calibre.utils.img import Canvas, image_from_data, optimize_jpeg, optimize_png
+from calibre.utils.resources import get_image_path as I
+from calibre.utils.resources import get_path as P
 from calibre.utils.zipfile import ZIP_STORED, ZipFile
 from polyglot import http_client
 from polyglot.builtins import as_bytes, iteritems, reraise
@@ -92,8 +122,9 @@ class Theme:
 
 class Report:
 
-    def __init__(self, path, name_map, extra, missing, theme):
+    def __init__(self, path, name_map, extra, missing, theme, number):
         self.path, self.name_map, self.extra, self.missing, self.theme = path, name_map, extra, missing, theme
+        self.number = number
         self.bad = {}
 
     @property
@@ -107,10 +138,16 @@ def read_theme_from_folder(path):
     name_map = read_images_from_folder(path)
     name_map.pop(THEME_COVER, None)
     name_map.pop('blank.png', None)
-    current_names = frozenset(current_image_map)
-    names = frozenset(name_map)
+
+    def canonical_name(x):
+        return x.replace('-for-dark-theme', '').replace('-for-light-theme', '')
+
+    current_names = set(map(canonical_name, current_image_map))
+    names = set(map(canonical_name, name_map))
     extra = names - current_names
     missing = current_names - names
+    missing.discard('blank.png')
+    number = len(names - extra)
     try:
         with open(os.path.join(path, THEME_METADATA), 'rb') as f:
             metadata = json.load(f)
@@ -127,10 +164,12 @@ def read_theme_from_folder(path):
             return int(x)
         except Exception:
             return -1
-    g = lambda x, defval='': metadata.get(x, defval)
+
+    def g(x, defval=''):
+        return metadata.get(x, defval)
     theme = Theme(g('title'), g('author'), safe_int(g('version', -1)), g('description'), g('license', 'Unknown'), g('url', None))
 
-    ans = Report(path, name_map, extra, missing, theme)
+    ans = Report(path, name_map, extra, missing, theme, number)
     try:
         with open(os.path.join(path, THEME_COVER), 'rb') as f:
             theme.cover = f.read()
@@ -186,7 +225,7 @@ def create_cover(report=None, icons=(), cols=5, size=120, padding=16, darkbg=Fal
                 ipath = os.path.join(report.path, report.name_map[icon])
             else:
                 ipath = I(icon, allow_user_override=False)
-            with lopen(ipath, 'rb') as f:
+            with open(ipath, 'rb') as f:
                 img = image_from_data(f.read())
             scaled, nwidth, nheight = fit_image(img.width(), img.height(), size, size)
             img = img.scaled(int(nwidth), int(nheight), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -273,7 +312,7 @@ class ThemeCreateDialog(Dialog):
             'color_palette': self.color_palette.currentData(),
             'version': self.version.value(),
             'description': self.description.toPlainText().strip(),
-            'number': len(self.report.name_map) - len(self.report.extra),
+            'number': self.report.number,
             'date': utcnow().date().isoformat(),
             'name': self.report.name,
             'license': self.license.text().strip() or 'Unknown',
@@ -402,7 +441,7 @@ def create_themeball(report, theme_metadata, progress=None, abort=None):
     with ZipFile(buf, 'w') as zf:
         for name in report.name_map:
             srcpath = os.path.join(report.path, name)
-            with lopen(srcpath, 'rb') as f:
+            with open(srcpath, 'rb') as f:
                 zf.writestr(name, f.read(), compression=ZIP_STORED)
     buf.seek(0)
     icon_zip_data = buf
@@ -417,7 +456,7 @@ def create_themeball(report, theme_metadata, progress=None, abort=None):
     if abort is not None and abort.is_set():
         return None, None, None
     with ZipFile(buf, 'w') as zf:
-        with lopen(os.path.join(report.path, THEME_METADATA), 'rb') as f:
+        with open(os.path.join(report.path, THEME_METADATA), 'rb') as f:
             zf.writestr(prefix + '/' + THEME_METADATA, f.read())
         zf.writestr(prefix + '/' + THEME_COVER, create_cover(report, darkbg=theme_metadata.get('color_palette') == 'dark'))
         zf.writestr(prefix + '/' + 'icons.zip.xz', compressed, compression=ZIP_STORED)
@@ -449,7 +488,7 @@ def create_theme(folder=None, parent=None):
         [(_('ZIP files'), ['zip'])], initial_filename=prefix + '.zip')
     if not dest:
         return
-    with lopen(dest, 'wb') as f:
+    with open(dest, 'wb') as f:
         f.write(raw)
 
     if use_in_calibre:
@@ -545,6 +584,10 @@ class Delegate(QStyledItemDelegate):
 
     SPACING = 10
 
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.static_text_cache = {}
+
     def sizeHint(self, option, index):
         return QSize(COVER_SIZE[0] * 2, COVER_SIZE[1] + 2 * self.SPACING)
 
@@ -562,21 +605,22 @@ class Delegate(QStyledItemDelegate):
             painter.setPen(QPen(QApplication.instance().palette().highlightedText().color()))
         bottom = option.rect.bottom() - 2
         painter.drawLine(0, bottom, option.rect.right(), bottom)
-        if 'static-text' not in theme:
-            visit = _('Right click to visit theme homepage') if theme.get('url') else ''
-            theme['static-text'] = QStaticText(_(
-                '''
-            <h2>{title}</h2>
+        visit = _('Right click to visit theme homepage') if theme.get('url') else ''
+        text = _('''\
+            <p><b><big>{title}</big></b><p>
             <p>by <i>{author}</i> with <b>{number}</b> icons [{size}]</p>
             <p>{description}</p>
             <p>Version: {version} Number of users: {usage:n}</p>
             <p><i>{visit}</i></p>
-            ''').format(title=theme.get('title', _('Unknown')), author=theme.get('author', _('Unknown')),
-                       number=theme.get('number', 0), description=theme.get('description', ''),
+            ''').format(title=escape(theme.get('title') or _('Unknown')), author=escape(theme.get('author', _('Unknown'))),
+                       number=theme.get('number', 0), description=escape(theme.get('description', '')),
                        size=human_readable(theme.get('compressed-size', 0)), version=theme.get('version', 1),
-                       usage=theme.get('usage', 0), visit=visit
-        ))
-        painter.drawStaticText(COVER_SIZE[0] + self.SPACING, option.rect.top() + self.SPACING, theme['static-text'])
+                       usage=theme.get('usage', 0), visit=escape(visit)
+            )
+        st = self.static_text_cache.get(text)
+        if st is None:
+            self.static_text_cache[text] = st = QStaticText(text)
+        painter.drawStaticText(COVER_SIZE[0] + self.SPACING, option.rect.top() + self.SPACING, st)
         painter.restore()
 
 

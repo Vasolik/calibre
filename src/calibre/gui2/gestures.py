@@ -4,11 +4,10 @@
 
 import os
 from functools import lru_cache
-from qt.core import (
-    QApplication, QEvent, QInputDevice, QMouseEvent, QObject, QPointF, QScroller, Qt,
-    pyqtSignal
-)
 
+from qt.core import QApplication, QEvent, QInputDevice, QMouseEvent, QObject, QPointF, QScroller, Qt, pyqtSignal
+
+from calibre.startup import connect_lambda
 from calibre.utils.monotonic import monotonic
 from polyglot.builtins import itervalues
 

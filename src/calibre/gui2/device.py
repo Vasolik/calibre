@@ -1,41 +1,65 @@
 __license__   = 'GPL v3'
 __copyright__ = '2008, Kovid Goyal <kovid at kovidgoyal.net>'
 
+import io
+
 # Imports {{{
-import os, traceback, time, io, re, sys, weakref
-from threading import Thread, Event
+import os
+import re
+import sys
+import time
+import traceback
+import weakref
+from threading import Event, Thread
 
-from qt.core import (
-    QMenu, QAction, QActionGroup, QIcon, pyqtSignal, QDialog,
-    QObject, QVBoxLayout, QDialogButtonBox, QCoreApplication,
-    QEventLoop, QTimer)
+from qt.core import QAction, QActionGroup, QCoreApplication, QDialog, QDialogButtonBox, QEventLoop, QIcon, QMenu, QObject, QTimer, QVBoxLayout, pyqtSignal
 
-from calibre.customize.ui import (available_input_formats, available_output_formats,
-    device_plugins, disabled_device_plugins)
-from calibre.devices.interface import DevicePlugin, currently_connected_device
-from calibre.devices.errors import (UserFeedback, OpenFeedback, OpenFailed, OpenActionNeeded,
-                                    InitialConnectionError)
-from calibre.ebooks.covers import cprefs, override_prefs, scale_cover, generate_cover
-from calibre.gui2.dialogs.choose_format_device import ChooseFormatDeviceDialog
-from calibre.utils.ipc.job import BaseJob
-from calibre.devices.scanner import DeviceScanner
-from calibre.gui2 import (config, error_dialog, Dispatcher, dynamic,
-        warning_dialog, info_dialog, choose_dir, FunctionDispatcher,
-        show_restart_warning, gprefs, question_dialog)
-from calibre.gui2.widgets import BusyCursor
-from calibre.ebooks.metadata import authors_to_string
-from calibre import preferred_encoding, prints, force_unicode, as_unicode, sanitize_file_name
-from calibre.utils.filenames import ascii_filename
-from calibre.devices.errors import (FreeSpaceError, WrongDestinationError,
-        BlacklistedDevice)
-from calibre.devices.folder_device.driver import FOLDER_DEVICE
+from calibre import as_unicode, force_unicode, preferred_encoding, prints, sanitize_file_name
 from calibre.constants import DEBUG
-from calibre.utils.config import tweaks, device_prefs
-from calibre.utils.img import scale_image
+from calibre.customize.ui import available_input_formats, available_output_formats, device_plugins, disabled_device_plugins
+from calibre.devices.errors import (
+    BlacklistedDevice,
+    FreeSpaceError,
+    InitialConnectionError,
+    OpenActionNeeded,
+    OpenFailed,
+    OpenFeedback,
+    UserFeedback,
+    WrongDestinationError,
+)
+from calibre.devices.folder_device.driver import FOLDER_DEVICE
+from calibre.devices.interface import DevicePlugin, currently_connected_device
+from calibre.devices.scanner import DeviceScanner
+from calibre.ebooks.covers import cprefs, generate_cover, override_prefs, scale_cover
+from calibre.ebooks.metadata import authors_to_string
+from calibre.gui2 import (
+    Dispatcher,
+    FunctionDispatcher,
+    choose_dir,
+    config,
+    dynamic,
+    error_dialog,
+    gprefs,
+    info_dialog,
+    question_dialog,
+    show_restart_warning,
+    warning_dialog,
+)
+from calibre.gui2.dialogs.choose_format_device import ChooseFormatDeviceDialog
+from calibre.gui2.widgets import BusyCursor
 from calibre.library.save_to_disk import find_plugboard
-from calibre.ptempfile import PersistentTemporaryFile, force_unicode as filename_to_unicode
-from polyglot.builtins import string_or_unicode
+from calibre.prints import debug_print
+from calibre.ptempfile import PersistentTemporaryFile
+from calibre.ptempfile import force_unicode as filename_to_unicode
+from calibre.startup import connect_lambda
+from calibre.utils.config import device_prefs, tweaks
+from calibre.utils.filenames import ascii_filename
+from calibre.utils.img import scale_image
+from calibre.utils.ipc.job import BaseJob
+from calibre.utils.localization import ngettext
 from polyglot import queue
+from polyglot.builtins import string_or_unicode
+
 # }}}
 
 
@@ -179,6 +203,7 @@ class DeviceManager(Thread):  # {{{
         self.keep_going     = True
         self.job_manager    = job_manager
         self.reported_errors = set()
+        self.shown_open_popups = set()
         self.current_job    = None
         self.scanner        = DeviceScanner()
         self.connected_device = None
@@ -217,7 +242,8 @@ class DeviceManager(Thread):  # {{{
             opm = dev.get_open_popup_message()
             if opm is not None:
                 skip_key = f'do_not_show_device_open_popup_message_{dev.__class__.__name__}'
-                if not gprefs.get(skip_key, False):
+                if skip_key not in self.shown_open_popups and not gprefs.get(skip_key, False):
+                    self.shown_open_popups.add(skip_key)
                     self.open_feedback_msg(dev.get_gui_name(), convert_open_popup(opm, skip_key))
             try:
                 dev.reset(detected_device=detected_device,
@@ -601,7 +627,7 @@ class DeviceManager(Thread):  # {{{
                             if DEBUG:
                                 prints('Setting metadata in:', mi.title, 'at:',
                                         f, file=sys.__stdout__)
-                            with lopen(f, 'r+b') as stream:
+                            with open(f, 'r+b') as stream:
                                 if cpb:
                                     newmi = mi.deepcopy_metadata()
                                     newmi.template_to_attribute(mi, cpb)
@@ -658,7 +684,7 @@ class DeviceManager(Thread):  # {{{
             name = sanitize_file_name(os.path.basename(path))
             dest = os.path.join(target, name)
             if os.path.abspath(dest) != os.path.abspath(path):
-                with lopen(dest, 'wb') as f:
+                with open(dest, 'wb') as f:
                     self.device.get_file(path, f)
 
     def save_books(self, done, paths, target, add_as_step_to_job=None):
@@ -667,7 +693,7 @@ class DeviceManager(Thread):  # {{{
                         to_job=add_as_step_to_job)
 
     def _view_book(self, path, target):
-        with lopen(target, 'wb') as f:
+        with open(target, 'wb') as f:
             self.device.get_file(path, f)
         return target
 
@@ -1027,6 +1053,28 @@ class DeviceMixin:  # {{{
     def _sync_action_triggered(self, *args):
         m = getattr(self, '_sync_menu', None)
         if m is not None:
+            ids = self.library_view.get_selected_ids(as_set=True)
+            db = self.current_db.new_api
+            already_on_device = db.all_field_for('ondevice', ids, default_value='')
+            books_on_device = {book_id for book_id, val in already_on_device.items() if val}
+            if books_on_device:
+                if len(books_on_device) == 1:
+                    if not question_dialog(self, _('Book already on device'), _(
+                        'The book {} is already present on the device. Resending it might cause any'
+                            ' annotations/bookmarks on the device for this book to be lost. Are you sure?').format(
+                                db.field_for('title', tuple(books_on_device)[0])), skip_dialog_name='confirm-resend-existing-books'
+                    ):
+                        return
+                else:
+                    title_sorts = db.all_field_for('sort', books_on_device)
+                    titles = sorted(db.all_field_for('title', books_on_device).items(), key=lambda x: title_sorts[x[0]])
+                    details = '\n'.join(title for book_id, title in titles)
+                    if not question_dialog(self, _('Some books already on device'), _(
+                        'Some of the selected books are already on the device. Resending them might cause any annotations/bookmarks on the'
+                        ' device for these books to be lost. Click "Show details" to see the books already on the device. Are you sure?'),
+                                        skip_dialog_name='confirm-resend-existing-books', det_msg=details
+                    ):
+                        return
             m.trigger_default()
 
     def create_device_menu(self):
@@ -1168,12 +1216,10 @@ class DeviceMixin:  # {{{
         self.device_manager.slow_driveinfo()
 
         # set_books_in_library might schedule a sync_booklists job
-        if DEBUG:
-            prints('DeviceJob: metadata_downloaded: Starting set_books_in_library')
+        debug_print('DeviceJob: metadata_downloaded: Starting set_books_in_library')
         self.set_books_in_library(job.result, reset=True, add_as_step_to_job=job)
 
-        if DEBUG:
-            prints('DeviceJob: metadata_downloaded: updating views')
+        debug_print('DeviceJob: metadata_downloaded: updating views')
         mainlist, cardalist, cardblist = job.result
         self.memory_view.set_database(mainlist)
         self.memory_view.set_editable(self.device_manager.device.CAN_SET_METADATA,
@@ -1187,17 +1233,14 @@ class DeviceMixin:  # {{{
         self.card_b_view.set_editable(self.device_manager.device.CAN_SET_METADATA,
                                       self.device_manager.device.BACKLOADING_ERROR_MESSAGE
                                       is None)
-        if DEBUG:
-            prints('DeviceJob: metadata_downloaded: syncing')
+        debug_print('DeviceJob: metadata_downloaded: syncing')
         self.sync_news()
         self.sync_catalogs()
 
-        if DEBUG:
-            prints('DeviceJob: metadata_downloaded: refreshing ondevice')
+        debug_print('DeviceJob: metadata_downloaded: refreshing ondevice')
         self.refresh_ondevice()
 
-        if DEBUG:
-            prints('DeviceJob: metadata_downloaded: sending metadata_available signal')
+        debug_print('DeviceJob: metadata_downloaded: sending metadata_available signal')
         device_signals.device_metadata_available.emit()
 
     def refresh_ondevice(self, reset_only=False):
@@ -1779,7 +1822,7 @@ class DeviceMixin:  # {{{
 
     def update_thumbnail(self, book):
         if book.cover and os.access(book.cover, os.R_OK):
-            with lopen(book.cover, 'rb') as f:
+            with open(book.cover, 'rb') as f:
                 book.thumbnail = self.cover_to_thumbnail(f.read())
         else:
             cprefs = self.default_thumbnail_prefs
@@ -1804,13 +1847,16 @@ class DeviceMixin:  # {{{
         except:
             return False
 
+        # Define the cleaning function
         string_pat = re.compile(r'(?u)\W|[_]')
 
         def clean_string(x):
             try:
+                # Convert to lowercase if x is not None or empty
                 x = x.lower() if x else ''
             except Exception:
                 x = ''
+            # Perform regex substitution
             return string_pat.sub('', x)
 
         update_metadata = (
@@ -1889,6 +1935,21 @@ class DeviceMixin:  # {{{
             except:
                 return True
 
+        def get_by_author(book, d, author):
+            book_id = d['authors'].get(author)
+            if book_id is not None:
+                book.in_library = 'AUTHOR'
+                book.application_id = book_id
+                update_book(book_id, book)
+                return True
+            book_id = d['author_sort'].get(author)
+            if book_id is not None:
+                book.in_library = 'AUTH_SORT'
+                book.application_id = book_id
+                update_book(book_id, book)
+                return True
+            return False
+
         # Now iterate through all the books on the device, setting the
         # in_library field. If the UUID matches a book in the library, then
         # do not consider that book for other matching. In all cases set
@@ -1901,8 +1962,7 @@ class DeviceMixin:  # {{{
             for book in booklist:
                 if book:
                     total_book_count += 1
-        if DEBUG:
-            prints('DeviceJob: set_books_in_library: books to process=', total_book_count)
+        debug_print('DeviceJob: set_books_in_library: books to process=', total_book_count)
 
         start_time = time.time()
 
@@ -1962,17 +2022,11 @@ class DeviceMixin:  # {{{
                         if book.authors:
                             # Compare against both author and author sort, because
                             # either can appear as the author
-                            book_authors = clean_string(authors_to_string(book.authors))
-                            if book_authors in d['authors']:
-                                id_ = d['authors'][book_authors]
-                                update_book(id_, book)
-                                book.in_library = 'AUTHOR'
-                                book.application_id = id_
-                            elif book_authors in d['author_sort']:
-                                id_ = d['author_sort'][book_authors]
-                                update_book(id_, book)
-                                book.in_library = 'AUTH_SORT'
-                                book.application_id = id_
+                            all_book_authors = clean_string(authors_to_string(book.authors))
+                            if not get_by_author(book, d, all_book_authors):
+                                for author in book.authors:
+                                    if get_by_author(book, d, clean_string(author)):
+                                        break
                     else:
                         # Book definitely not matched. Clear its application ID
                         book.application_id = None
@@ -2042,9 +2096,7 @@ class DeviceMixin:  # {{{
             except:
                 traceback.print_exc()
 
-        if DEBUG:
-            prints('DeviceJob: set_books_in_library finished: time=',
-                   time.time() - start_time)
+        debug_print('DeviceJob: set_books_in_library finished: time=', time.time() - start_time)
         # The status line is reset when the job finishes
         return update_metadata
     # }}}

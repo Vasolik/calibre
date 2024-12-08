@@ -12,37 +12,42 @@ import sys
 import unicodedata
 import uuid
 from collections import defaultdict
-from css_parser import getUrls, replaceUrls
 from io import BytesIO
 from itertools import count
+from math import floor
+
+from css_parser import getUrls, replaceUrls
 
 from calibre import CurrentDir, walk
 from calibre.constants import iswindows
 from calibre.customize.ui import plugin_for_input_format, plugin_for_output_format
 from calibre.ebooks import escape_xpath_attr
 from calibre.ebooks.chardet import xml_to_unicode
-from calibre.ebooks.conversion.plugins.epub_input import (
-    ADOBE_OBFUSCATION, IDPF_OBFUSCATION, decrypt_font_data
-)
-from calibre.ebooks.conversion.preprocess import (
-    CSSPreProcessor as cssp, HTMLPreProcessor
-)
-from calibre.ebooks.metadata.opf3 import (
-    CALIBRE_PREFIX, ensure_prefix, items_with_property, read_prefixes
-)
+from calibre.ebooks.conversion.plugins.epub_input import ADOBE_OBFUSCATION, IDPF_OBFUSCATION, decrypt_font_data
+from calibre.ebooks.conversion.preprocess import CSSPreProcessor as cssp
+from calibre.ebooks.conversion.preprocess import HTMLPreProcessor
+from calibre.ebooks.metadata.opf3 import CALIBRE_PREFIX, ensure_prefix, items_with_property, read_prefixes
 from calibre.ebooks.metadata.utils import parse_opf_version
 from calibre.ebooks.mobi import MobiError
 from calibre.ebooks.mobi.reader.headers import MetadataHeader
 from calibre.ebooks.oeb.base import (
-    DC11_NS, OEB_DOCS, OEB_STYLES, OPF, OPF2_NS, Manifest, itercsslinks, iterlinks,
-    rewrite_links, serialize, urlquote, urlunquote
+    DC11_NS,
+    OEB_DOCS,
+    OEB_STYLES,
+    OPF,
+    OPF2_NS,
+    Manifest,
+    itercsslinks,
+    iterlinks,
+    rewrite_links,
+    serialize,
+    urlquote,
+    urlunquote,
 )
 from calibre.ebooks.oeb.parse_utils import NotHTML, parse_html
 from calibre.ebooks.oeb.polish.errors import DRMError, InvalidBook
 from calibre.ebooks.oeb.polish.parsing import parse as parse_html_tweak
-from calibre.ebooks.oeb.polish.utils import (
-    CommentFinder, PositionFinder, adjust_mime_for_epub, guess_type, parse_css, OEB_FONTS
-)
+from calibre.ebooks.oeb.polish.utils import OEB_FONTS, CommentFinder, PositionFinder, adjust_mime_for_epub, guess_type, parse_css
 from calibre.ptempfile import PersistentTemporaryDirectory, PersistentTemporaryFile
 from calibre.utils.filenames import hardlink_file, nlinks_file, retry_on_fail
 from calibre.utils.ipc.simple_worker import WorkerError, fork_job
@@ -122,6 +127,18 @@ def href_to_name(href, root, base=None):
         return unicodedata.normalize('NFC', abspath_to_name(fullpath, root))
     except ValueError:
         return None
+
+
+def seconds_to_timestamp(duration: float) -> str:
+    seconds = int(floor(duration))
+    float_part = duration - seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    ans = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+    if float_part:
+        ans += f'{float_part:.20f}'.rstrip('0')[1:]
+    return ans
 
 
 class ContainerBase:  # {{{
@@ -372,7 +389,7 @@ class Container(ContainerBase):  # {{{
         base = os.path.dirname(path)
         if not os.path.exists(base):
             os.makedirs(base)
-        with lopen(path, 'wb') as f:
+        with open(path, 'wb') as f:
             if hasattr(data, 'read'):
                 shutil.copyfileobj(data, f)
             else:
@@ -587,7 +604,7 @@ class Container(ContainerBase):  # {{{
         return set()
 
     def parse(self, path, mime):
-        with lopen(path, 'rb') as src:
+        with open(path, 'rb') as src:
             data = src.read()
         if mime in OEB_DOCS:
             data = self.parse_xhtml(data, self.relpath(path))
@@ -664,10 +681,13 @@ class Container(ContainerBase):  # {{{
         return parse_opf_version(self.opf_version)
 
     @property
+    def manifest_items(self):
+        return self.opf_xpath('//opf:manifest/opf:item[@href and @id]')
+
+    @property
     def manifest_id_map(self):
         ' Mapping of manifest id to canonical names '
-        return {item.get('id'):self.href_to_name(item.get('href'), self.opf_name)
-            for item in self.opf_xpath('//opf:manifest/opf:item[@href and @id]')}
+        return {item.get('id'):self.href_to_name(item.get('href'), self.opf_name) for item in self.manifest_items}
 
     @property
     def manifest_type_map(self):
@@ -865,6 +885,12 @@ class Container(ContainerBase):  # {{{
                     self.remove_from_xml(meta)
                     self.dirty(self.opf_name)
 
+            for meta in self.opf_xpath('//opf:meta[@refines]'):
+                q = meta.get('refines')
+                if q.startswith('#') and q[1:] in removed:
+                    self.remove_from_xml(meta)
+                    self.dirty(self.opf_name)
+
         if remove_from_guide:
             for item in self.opf_xpath('//opf:guide/opf:reference[@href]'):
                 if self.href_to_name(item.get('href'), self.opf_name) == name:
@@ -877,6 +903,22 @@ class Container(ContainerBase):  # {{{
         self.mime_map.pop(name, None)
         self.parsed_cache.pop(name, None)
         self.dirtied.discard(name)
+
+    def set_media_overlay_durations(self, duration_map=None):
+        self.dirty(self.opf_name)
+        for meta in self.opf_xpath('//opf:meta[@property="media:duration"]'):
+            self.remove_from_xml(meta)
+        metadata = self.opf_xpath('//opf:metadata')[0]
+        total_duration = 0
+        for item_id, duration in (duration_map or {}).items():
+            meta = metadata.makeelement(OPF('meta'), property="media:duration", refines="#" + item_id)
+            meta.text = seconds_to_timestamp(duration)
+            self.insert_into_xml(metadata, meta)
+            total_duration += duration
+        if duration_map:
+            meta = metadata.makeelement(OPF('meta'), property="media:duration")
+            meta.text = seconds_to_timestamp(total_duration)
+            self.insert_into_xml(metadata, meta)
 
     def dirty(self, name):
         ''' Mark the parsed object corresponding to name as dirty. See also: :meth:`parsed`. '''
@@ -947,11 +989,13 @@ class Container(ContainerBase):  # {{{
         href = self.name_to_href(name, self.opf_name)
         base, ext = href.rpartition('.')[0::2]
         all_ids = {x.get('id') for x in self.opf_xpath('//*[@id]')}
+        if id_prefix.endswith('-'):
+            all_ids.add(id_prefix)
         c = 0
         item_id = id_prefix
         while item_id in all_ids:
             c += 1
-            item_id = id_prefix + '%d'%c
+            item_id = f'{id_prefix}{c}'
 
         manifest = self.opf_xpath('//opf:manifest')[0]
         item = manifest.makeelement(OPF('item'),
@@ -968,7 +1012,7 @@ class Container(ContainerBase):  # {{{
         base = os.path.dirname(path)
         if not os.path.exists(base):
             os.makedirs(base)
-        lopen(path, 'wb').close()
+        open(path, 'wb').close()
         return item
 
     def format_opf(self):
@@ -1006,7 +1050,7 @@ class Container(ContainerBase):  # {{{
         if name == self.opf_name and root.nsmap.get(None) == OPF2_NS:
             # Needed as I can't get lxml to output opf:role and
             # not output <opf:metadata> as well
-            data = re.sub(br'(<[/]{0,1})opf:', r'\1', data)
+            data = re.sub(br'(<[/]{0,1})opf:', br'\1', data)
         return data
 
     def commit_item(self, name, keep_parsed=False):
@@ -1023,7 +1067,7 @@ class Container(ContainerBase):  # {{{
         if self.cloned and nlinks_file(dest) > 1:
             # Decouple this file from its links
             os.unlink(dest)
-        with lopen(dest, 'wb') as f:
+        with open(dest, 'wb') as f:
             f.write(data)
 
     def filesize(self, name):
@@ -1061,7 +1105,7 @@ class Container(ContainerBase):  # {{{
         this will commit the file if it is dirtied and remove it from the parse
         cache. You must finish with this file before accessing the parsed
         version of it again, or bad things will happen. '''
-        return lopen(self.get_file_path_for_processing(name, mode not in {'r', 'rb'}), mode)
+        return open(self.get_file_path_for_processing(name, mode not in {'r', 'rb'}), mode)
 
     def commit(self, outpath=None, keep_parsed=False):
         '''
@@ -1079,7 +1123,7 @@ class Container(ContainerBase):  # {{{
         mismatches = []
         for name, path in iteritems(self.name_path_map):
             opath = other.name_path_map[name]
-            with lopen(path, 'rb') as f1, lopen(opath, 'rb') as f2:
+            with open(path, 'rb') as f1, open(opath, 'rb') as f2:
                 if f1.read() != f2.read():
                     mismatches.append('The file %s is not the same'%name)
         return '\n'.join(mismatches)
@@ -1172,7 +1216,7 @@ class EpubContainer(Container):
                 if fname is not None:
                     shutil.copy(os.path.join(dirpath, fname), os.path.join(base, fname))
         else:
-            with lopen(self.pathtoepub, 'rb') as stream:
+            with open(self.pathtoepub, 'rb') as stream:
                 try:
                     zf = ZipFile(stream)
                     zf.extractall(tdir)
@@ -1399,12 +1443,12 @@ class EpubContainer(Container):
                     if err.errno != errno.EEXIST:
                         raise
                 for fname in filenames:
-                    with lopen(os.path.join(dirpath, fname), 'rb') as src, lopen(os.path.join(base, fname), 'wb') as dest:
+                    with open(os.path.join(dirpath, fname), 'rb') as src, open(os.path.join(base, fname), 'wb') as dest:
                         shutil.copyfileobj(src, dest)
 
         else:
             from calibre.ebooks.tweak import zip_rebuilder
-            with lopen(join(self.root, 'mimetype'), 'wb') as f:
+            with open(join(self.root, 'mimetype'), 'wb') as f:
                 et = guess_type('a.epub')
                 if not isinstance(et, bytes):
                     et = et.encode('ascii')
@@ -1434,7 +1478,7 @@ class InvalidMobi(InvalidBook):
 def do_explode(path, dest):
     from calibre.ebooks.mobi.reader.mobi6 import MobiReader
     from calibre.ebooks.mobi.reader.mobi8 import Mobi8Reader
-    with lopen(path, 'rb') as stream:
+    with open(path, 'rb') as stream:
         mr = MobiReader(stream, default_log, None, None)
 
         with CurrentDir(dest):
@@ -1472,6 +1516,28 @@ def opf_to_azw3(opf, outpath, container):
 
 def epub_to_azw3(epub, outpath=None):
     container = get_container(epub, tweak_mode=True)
+    changed = False
+    for item in container.opf_xpath('//opf:manifest/opf:item[@properties and @href]'):
+        p = item.get('properties').split()
+        if 'cover-image' in p:
+            href = item.get('href')
+            guides = container.opf_xpath('//opf:guide')
+            if not guides:
+                guides = (container.opf.makeelement(OPF('guide')),)
+                container.opf.append(guides[0])
+            for guide in guides:
+                for child in guide:
+                    if child.get('type') == 'cover':
+                        break
+                else:
+                    guide.append(guide.makeelement(OPF('reference'), type='cover', href=href))
+                    changed = True
+            break
+        elif 'calibre:title-page' in p:
+            item.getparent().remove(item)
+    if changed:
+        container.dirty(container.opf_name)
+        container.commit_item(container.opf_name)
     outpath = outpath or (epub.rpartition('.')[0] + '.azw3')
     opf_to_azw3(container.name_to_abspath(container.opf_name), outpath, container)
 
@@ -1494,7 +1560,7 @@ class AZW3Container(Container):
             tdir = PersistentTemporaryDirectory('_azw3_container')
         tdir = os.path.abspath(os.path.realpath(tdir))
         self.root = tdir
-        with lopen(pathtoazw3, 'rb') as stream:
+        with open(pathtoazw3, 'rb') as stream:
             raw = stream.read(3)
             if raw == b'TPZ':
                 raise InvalidMobi(_('This is not a MOBI file. It is a Topaz file.'))

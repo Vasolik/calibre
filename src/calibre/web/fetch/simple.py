@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import traceback
+from base64 import standard_b64decode
 from urllib.request import urlopen
 
 from calibre import browser, relpath, unicode_path
@@ -26,13 +27,11 @@ from calibre.ebooks.chardet import xml_to_unicode
 from calibre.utils.config import OptionParser
 from calibre.utils.filenames import ascii_filename
 from calibre.utils.imghdr import what
+from calibre.utils.localization import _
 from calibre.utils.logging import Log
 from calibre.web.fetch.utils import rescale_image
 from polyglot.http_client import responses
-from polyglot.urllib import (
-    URLError, quote, url2pathname, urljoin, urlparse, urlsplit, urlunparse,
-    urlunsplit
-)
+from polyglot.urllib import URLError, quote, url2pathname, urljoin, urlparse, urlsplit, urlunparse, urlunsplit
 
 
 class AbortArticle(Exception):
@@ -179,10 +178,12 @@ class RecursiveFetcher:
         self.compress_news_images = getattr(options, 'compress_news_images', False)
         self.compress_news_images_auto_size = getattr(options, 'compress_news_images_auto_size', 16)
         self.scale_news_images = getattr(options, 'scale_news_images', None)
+        self.get_delay = getattr(options, 'get_delay', lambda url: self.delay)
         self.download_stylesheets = not options.no_stylesheets
         self.show_progress = True
         self.failed_links = []
         self.job_info = job_info
+        self.preloaded_urls = {}
 
     def get_soup(self, src, url=None):
         nmassage = []
@@ -243,13 +244,23 @@ class RecursiveFetcher:
 
     def fetch_url(self, url):
         data = None
-        self.log.debug('Fetching', url)
+        q = self.preloaded_urls.pop(url, None)
+        if q is not None:
+            ans = response(q)
+            ans.newurl = url
+            return ans
         st = time.monotonic()
 
+        is_data_url = url.startswith('data:')
+        if not is_data_url:
+            self.log.debug('Fetching', url)
         # Check for a URL pointing to the local filesystem and special case it
         # for efficiency and robustness. Bypasses delay checking as it does not
         # apply to local fetches. Ensures that unicode paths that are not
         # representable in the filesystem_encoding work.
+        if is_data_url:
+            payload = url.partition(',')[2]
+            return standard_b64decode(payload)
         is_local = 0
         if url.startswith('file://'):
             is_local = 7
@@ -267,8 +278,9 @@ class RecursiveFetcher:
             return data
 
         delta = time.monotonic() - self.last_fetch_at
-        if delta < self.delay:
-            time.sleep(self.delay - delta)
+        delay = self.get_delay(url)
+        if delta < delay:
+            time.sleep(delay - delta)
         url = canonicalize_url(url)
         open_func = getattr(self.browser, 'open_novisit', self.browser.open)
         try:
@@ -278,7 +290,7 @@ class RecursiveFetcher:
         except URLError as err:
             if hasattr(err, 'code') and err.code in responses:
                 raise FetchError(responses[err.code])
-            is_temp = False
+            is_temp = getattr(err, 'worth_retry', False)
             reason = getattr(err, 'reason', None)
             if isinstance(reason, socket.gaierror):
                 # see man gai_strerror() for details
@@ -448,7 +460,7 @@ class RecursiveFetcher:
                     if itype not in {'png', 'jpg', 'jpeg'}:
                         itype = 'png' if itype == 'gif' else 'jpeg'
                         data = image_to_data(img, fmt=itype)
-                    if self.compress_news_images and itype in {'jpg','jpeg'}:
+                    if self.compress_news_images:
                         try:
                             data = self.rescale_image(data)
                         except Exception:
